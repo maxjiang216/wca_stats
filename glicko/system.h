@@ -10,8 +10,8 @@ class System {
 
 public:
   System(float start_sigma2, float start_rho, float start_nu2,
-         float sigma2_const, float nu2_const, float min_rho, float min_sigma2,
-         float min_nu2);
+         float sigma2_const, float nu2_const, float min_rho,
+         float min_sigma2, float min_nu2);
   ~System() = default;
 
   friend class Person;

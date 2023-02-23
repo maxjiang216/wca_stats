@@ -63,6 +63,7 @@ def main(event="333"):
     with open(
         f"{dir_path}/../data/period_results_{event}.tsv", "w", encoding="utf-8"
     ) as f:
+        f.write(f"{len(period_person)}\n")
         max_res = 0
         best_avg = 0
         max_id_period = None

@@ -13,16 +13,21 @@ class Person {
   System *system;
   bool is_initialized;
 
-  void update_rho(float xbar, float elapsed2, uintf n, float *times);
-  void update_sigma2(float xbar, float elapsed2, uintf n);
-  void update_mu(float old_sigma2, float xsum, float xbar, float elapsed2);
-  void update_nu2(float elapsed2, uintf n, float *times);
+  void initialize(uintf n, float *times);
+  void update_rho(float xbar, float cur_nu2, uintf n, float *times);
+  void update_sigma2(float xbar, float cur_sigma2, uintf n);
+  void update_mu(float cur_sigma2, float xsum, float xbar);
+  void update_nu2(float cur_nu2, uintf n, float *times);
 
 public:
+  Person() = default;
   Person(uintf period, System *system, uintf n, float *times);
   ~Person() = default;
 
-  void update_stats(uintf period, uintf n, uintf *times);
+  void update_stats(uintf period, uintf n, float *times);
+
+  // Accessors
+  float get_mu() const;
 };
 
 #endif
