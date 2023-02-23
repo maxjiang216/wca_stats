@@ -11,6 +11,9 @@ def process_result(row, is_mbld=False):
         time = int(item)
         # Filter DNS and no result
         if time not in [-2, 0]:
+            # Keep results non-negative
+            if time < 0:
+                time = 0
             res.append(time)
     return res
 
