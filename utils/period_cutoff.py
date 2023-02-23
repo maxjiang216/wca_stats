@@ -6,6 +6,12 @@ import csv
 from datetime import datetime, timedelta
 
 
+def next_weekday(day, day_of_week=0):
+    days_ahead = (day_of_week - day.weekday() + 7) % 7
+    return day + timedelta(days_ahead)
+
+
+# 0 is Monday
 def main(day_of_week=0):
 
     dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -40,6 +46,28 @@ def main(day_of_week=0):
             cur_date += timedelta(1)
     print(comp_lst)
     print(len(comp_lst))
+    # Map period end dates to competitions
+    periods = {}
+    for comp, dates in competitions.items():
+        period = next_weekday(dates[1], day_of_week)
+        if period not in periods:
+            periods[period] = set()
+        periods[period].add(comp)
+    print(periods)
+    print(len(periods))
+    # Label periods with distance from first period
+    first_period = min(periods.keys())
+    normed_periods = {}
+    for period in periods:
+        normed_periods[(period - first_period).days // 7] = periods[period]
+    print(normed_periods)
+    # Write into file
+    with open(f"{dir_path}/../data/periods.tsv", "w", encoding="utf-8") as f:
+        for period, comps in sorted(normed_periods.items()):
+            f.write(f"{period}")
+            for comp in comps:
+                f.write(f"\t{comp}")
+            f.write("\n")
 
 
 if __name__ == "__main__":
