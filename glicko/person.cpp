@@ -3,10 +3,13 @@
 
 Person::Person(uintf period, System *system, uintf n, float *times)
     : last_competed{period}, sigma2{system->start_sigma2},
-      nu2{system->start_nu2}, system{system}, is_initialized{false} {}
+      nu2{system->start_nu2}, system{system}, is_initialized{false} {
+  initialize(n, times);
+}
 
 // Initialize mu, rho
 void Person::initialize(uintf n, float *times) {
+
   // We cannot initialize anythin with no timed solves
   if (n == 0) {
     return;
@@ -41,6 +44,7 @@ void Person::initialize(uintf n, float *times) {
 
 // Compute new rho
 void Person::update_rho(float xbar, float elapsed2, uintf n, float *times) {
+
   // sum(xi-xbar)^2/(xbar^2)
   float frho_sum = 0.0;
   for (uintf i = 0; i < n; ++i) {
@@ -94,23 +98,29 @@ void Person::update_nu2(float elapsed2, uintf n, float *times) {
 }
 
 void update_stats(uintf period, uintf n, float *times) {
+
   if (n == 0) {
     return;
   }
-  float elapsed2 = pow((float)(period - last_competed), 2);
-  last_competed = period;
-  float xsum = 0.0;
-  for (uintf i = 0; i < n; ++i) {
-    xsum += times[i];
+  if (!is_initialized) {
+    last_competed = period;
+    initialize(n, times);
+  } else {
+    float elapsed2 = pow((float)(period - last_competed), 2);
+    last_competed = period;
+    float xsum = 0.0;
+    for (uintf i = 0; i < n; ++i) {
+      xsum += times[i];
+    }
+    float xbar = xsum / (float)n;
+
+    update_rho(xbar, elapsed2, n, times);
+
+    float old_sigma2 = sigma2;
+    update_sigma2(xbar, elapsed2, n);
+
+    update_mu(old_sigma2, xsum, xbar, elapsed2);
+
+    update_nu2(elapsed2, n, times);
   }
-  float xbar = xsum / (float)n;
-
-  update_rho(xbar, elapsed2, n, times);
-
-  float old_sigma2 = sigma2;
-  update_sigma2(xbar, elapsed2, n);
-
-  update_mu(old_sigma2, xsum, xbar, elapsed2);
-
-  update_nu2(elapsed2, n, times);
 }
