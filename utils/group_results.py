@@ -56,7 +56,7 @@ def main(event="333"):
     for period, people in periods.items():
         for person, times in people.items():
             times.sort()
-            dnfs = times.count(-1)
+            dnfs = times.count(0)
             period_person[(period, person)] = (dnfs, times[dnfs:])
 
     # Write data to file
