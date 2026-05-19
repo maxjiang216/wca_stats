@@ -1,0 +1,273 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  background: #0a0a0a;
+  color: #e6e6e6;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a {
+  color: #6ea8ff;
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #111;
+  border-right: 1px solid #222;
+  padding: 16px;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.sidebar .subtitle {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 20px;
+}
+
+.sidebar h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.05em;
+  margin-top: 18px;
+  margin-bottom: 6px;
+}
+
+.sidebar a {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.sidebar a:hover {
+  background: #1a1a1a;
+  text-decoration: none;
+}
+
+.sidebar a.active {
+  background: #1d3a6b;
+  color: #fff;
+}
+
+.content {
+  padding: 24px 32px;
+  max-width: 1400px;
+}
+
+.page-header h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.page-header .desc {
+  color: #999;
+  margin-bottom: 16px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.toolbar label {
+  font-size: 12px;
+  color: #aaa;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toolbar select {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: #e6e6e6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.toolbar .toggle-group {
+  display: flex;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.toolbar .toggle-group button {
+  background: #1a1a1a;
+  color: #aaa;
+  border: none;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.toolbar .toggle-group button.active {
+  background: #1d3a6b;
+  color: #fff;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #888;
+  letter-spacing: 0.05em;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a2a2a;
+  position: sticky;
+  top: 0;
+  background: #0a0a0a;
+}
+
+tbody td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+tbody tr:hover {
+  background: #141414;
+}
+
+.rank-col { width: 50px; color: #888; }
+.value-col { font-weight: 600; color: #fff; }
+.muted { color: #888; font-size: 12px; }
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.tabs button {
+  background: #1a1a1a;
+  color: #aaa;
+  border: 1px solid #333;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.tabs button.active {
+  background: #1d3a6b;
+  color: #fff;
+  border-color: #1d3a6b;
+}
+
+.loading, .empty {
+  padding: 40px;
+  text-align: center;
+  color: #888;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.home-card {
+  display: block;
+  padding: 14px;
+  background: #131313;
+  border: 1px solid #232323;
+  border-radius: 6px;
+}
+
+.home-card:hover {
+  background: #181818;
+  border-color: #2c4d80;
+  text-decoration: none;
+}
+
+.home-card h3 {
+  color: #fff;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.home-card p {
+  color: #999;
+  font-size: 12px;
+}
+
+.event-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.event-checkboxes label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #aaa;
+  user-select: none;
+}
+
+.event-checkboxes label:hover {
+  border-color: #555;
+  color: #ddd;
+}
+
+.event-checkboxes label.checked {
+  background: #1d3a6b33;
+  border-color: #1d3a6b;
+  color: #6ea8ff;
+}
+
+.event-checkboxes input[type=checkbox] {
+  width: 12px;
+  height: 12px;
+  accent-color: #6ea8ff;
+}
