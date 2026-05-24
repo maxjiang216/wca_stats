@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crate::db::WcaDb;
 
+mod first_records;
 mod mbld;
 mod nations_cup;
 mod nth_solve;
@@ -11,6 +12,7 @@ mod skill_estimator;
 mod sub_x;
 mod two_man;
 mod wr_half_life;
+mod wr_longevity;
 
 pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     eprintln!("nth_solve");
@@ -33,5 +35,9 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     wr_half_life::write(db, out_dir)?;
     eprintln!("skill_estimator");
     skill_estimator::write(db, out_dir)?;
+    eprintln!("first_records");
+    first_records::write(db, out_dir)?;
+    eprintln!("wr_longevity");
+    wr_longevity::write(db, out_dir)?;
     Ok(())
 }

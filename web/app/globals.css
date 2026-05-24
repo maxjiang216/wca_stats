@@ -271,3 +271,147 @@ tbody tr:hover {
   height: 12px;
   accent-color: #6ea8ff;
 }
+
+/* WR Longevity duration bars */
+.dur-wrap {
+  position: relative;
+  height: 20px;
+  display: flex;
+  align-items: center;
+}
+
+.dur-bar {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 2px;
+  opacity: 0.35;
+}
+
+.dur-done    { background: #6ea8ff; }
+.dur-current { background: #4caf50; }
+
+.dur-label {
+  position: relative;
+  font-size: 12px;
+  color: #aaa;
+  padding-left: 4px;
+  white-space: nowrap;
+}
+
+.dur-label-current { color: #4caf50; }
+
+.dur-now {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 2px;
+}
+
+/* First Records table */
+.first-records-wrap {
+  overflow: hidden;
+}
+
+.first-records-scroll {
+  overflow-x: auto;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.first-records-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: max-content;
+}
+
+.first-records-table th,
+.first-records-table td {
+  border: 1px solid #232323;
+  padding: 4px 6px;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.first-records-table thead th {
+  position: sticky;
+  top: 0;
+  background: #131313;
+  color: #aaa;
+  z-index: 2;
+  text-align: center;
+}
+
+.first-records-table .country-col {
+  position: sticky;
+  left: 0;
+  background: #0d0d0d;
+  z-index: 1;
+  min-width: 160px;
+  font-weight: 500;
+  color: #ddd;
+}
+
+.first-records-table thead .country-col {
+  z-index: 3;
+}
+
+.first-records-table td.empty {
+  color: #444;
+  text-align: center;
+  padding: 0;
+}
+
+.first-records-table td.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 130px;
+  padding: 3px 6px;
+}
+
+.first-records-table td.cell a {
+  color: #6ea8ff;
+  text-decoration: none;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.first-records-table td.cell a:hover {
+  text-decoration: underline;
+}
+
+.first-records-table td.cell .cell-value {
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  width: fit-content;
+}
+
+.badge.WR {
+  background: #1d3a6b;
+  color: #6ea8ff;
+}
+
+.badge.CR {
+  background: #2a1f00;
+  color: #f0a500;
+}
+
+.first-records-table td.wr {
+  background: #0d1a2e;
+}
+
+.first-records-table td.cr {
+  background: #130f00;
+}
