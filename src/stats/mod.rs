@@ -2,6 +2,7 @@ use anyhow::Result;
 use crate::db::WcaDb;
 
 mod first_records;
+mod kalman_skill;
 mod mbld;
 mod nations_cup;
 mod nth_solve;
@@ -19,6 +20,8 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     nth_solve::write(db, out_dir)?;
     eprintln!("mbld");
     mbld::write(db, out_dir)?;
+    eprintln!("mbld_rankings");
+    mbld::write_rankings(db, out_dir)?;
     eprintln!("ranking_countries");
     ranking_countries::write(db, out_dir)?;
     eprintln!("relay");
@@ -35,6 +38,8 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     wr_half_life::write(db, out_dir)?;
     eprintln!("skill_estimator");
     skill_estimator::write(db, out_dir)?;
+    eprintln!("kalman_skill");
+    kalman_skill::write(db, out_dir)?;
     eprintln!("first_records");
     first_records::write(db, out_dir)?;
     eprintln!("wr_longevity");

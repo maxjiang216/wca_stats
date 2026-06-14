@@ -1,0 +1,61 @@
+# Modeling Skill-Task Completion Times
+
+**Distributions:**  Common models for completion/response times include the **log-normal**, **shifted (3‑parameter) log-normal**, **ex-Gaussian** (normal + exp), **gamma**, and **Weibull** distributions.  All are supported on \(x>0\) (or \(x>\theta\) for a shifted log-normal with minimum \(\theta\)).  The **log-normal** (parameters \(\mu,\sigma\)) arises from multiplicative processes.  Its PDF has a long right tail: on a log-scale the tail is normal, so \(P(X>x)\approx\exp[-(\ln x)^2/(2\sigma^2)]\) for large \(x\).  In fact *any* log-normal is eventually heavier-tailed than *any* gamma (and lighter-tailed than a power-law).  A 3-parameter log-normal simply shifts the support by \(\theta\).  The **ex-Gaussian** is the convolution of a normal \(\mathcal{N}(\mu,\sigma^2)\) and an independent exponential (\(\mathrm{mean}=\tau\)).  Its mean and variance are \(\mu+\tau\) and \(\sigma^2+\tau^2\), and its tail decays exponentially (like the exp component) rather than power-law.  Psychologists often fit ex-Gaussians to reaction times, interpreting \(\mu,\sigma\) as the “fast” normal component and \(\tau\) as a slow tail of lapses.  By contrast, the **gamma** distribution (shape \(k\), scale \(\theta\)) has pdf \(f(x)\propto x^{k-1}e^{-x/\theta}\); it also decays exponentially (light tail) but can model skew.  Its coefficient of variation is CV = \(1/\sqrt{k}\).  The **Weibull** (scale \(\lambda\), shape \(k\)) has PDF \(k(\!x/\lambda)^{{k}-1}\exp[-(x/\lambda)^k]\).  If \(k<1\), the Weibull is heavy-tailed (subexponential); if \(k>1\), it decays faster than an exponential.  (Indeed, only the Weibull with \(0<k<1\) is heavy-tailed.)  
+
+**Tail behavior:**  In summary, log-normal (and by extension shifted log-normal) has the heaviest right tail among these common models (heavy-tailed: slower than any exponential).  Gamma, exponential, and ex-Gaussian all have exponential (light) tails.  Weibull’s tail depends on shape \(k\): heavy if \(k<1\), light (even super-exponential) if \(k>1\).  (For reference, heavy-tailed distributions include log-normal and Weibull-\(k<1\), whereas exponential-gamma, normal, and most Weibull-\(k>1\) are light-tailed.)
+
+**Coefficient of variation (CV) and scaling:**  The log-normal and gamma are *“constant-CV”* families: if one fixes their shape parameter (\(\sigma\) for log-normal, or shape \(k\) for gamma) and only scales the mean, then SD grows proportionally so that CV remains constant.  (For log-normal, \(\mathrm{CV}=\sqrt{e^{\sigma^2}-1}\); for gamma \(\mathrm{CV}=1/\sqrt{k}\).)  This implies that if skill level simply scales the mean time (e.g. a faster solver is a faster version of the same distribution), then log-normal/gamma models predict SD ∝ mean.  By contrast, the ex‑Gaussian CV is 
+\[
+\mathrm{CV}_{\rm exG} = \frac{\sqrt{\sigma^2 + \tau^2}}{\mu + \tau}, 
+\] 
+so it depends on how \(\mu,\sigma,\tau\) change with skill.  Typically one finds that as solvers improve, both the central (μ,σ) and tail (τ) parameters shrink; CV need not remain exactly constant.  The Weibull’s CV depends on its shape \(k\) via CV\(^2\) = \(\Gamma(1+2/k)/[\Gamma(1+1/k)]^2 - 1\).  If the Weibull shape stays fixed across skill, then CV is constant as scale changes, but if \(k\) varies (e.g. distributions become less skewed with practice), CV will change.  
+
+In practice, many RT/skill data approximately exhibit *scalar variability* (SD roughly proportional to mean).  Log-normal and gamma models naturally satisfy this if their shape is held constant across individuals.  Ex-Gaussian models can also exhibit near-constant CV if \(\mu\) and \(\tau\) scale similarly.  Overall, constant-CV models imply that an individual’s spread (SD) grows linearly with their mean time.  Indeed, in timing literature the “scalar property” (Weber’s law) is often invoked: variance ∝ mean\(^2\).  Thus log-normal/gamma are appealing for modeling learning/skill effects, since each solver could share a fixed shape.  By contrast, a naive Gaussian (normal) would predict SD independent of mean, which contradicts typical RT scaling.  
+
+**Distributions in practice:**  Empirical work often finds that no one model fits all tasks.  The ex-Gaussian is popular and can fit a wide range of skew (it interpolates between normal and an exponential tail), but studies have shown that in simple tasks a Weibull or log-normal can fit better.  For example, Heathcote *et al.* (2004) note that log-normal provides fits as good as ex-Gaussian under many conditions.  In a large-sample RT study, Osmon *et al.* (2020) found log-normal often best and Weibull rarely best.  **Bottom line:** all five candidates are plausible for human completion times, but their tail weights differ:  
+- Log-normal / 3-param log-normal – heavy right tail, CV set by σ (constant if skill scales time).  
+- Ex-Gaussian – mild-heavy tail (exponential), CV depends on μ,σ,τ.  
+- Gamma – exponential (light) tail, CV = 1/√shape.  
+- Weibull – tail heavy only if shape<1; if shape>1 then lighter than exponential. CV fixed by shape.  
+
+## Rare Outliers and Robust Observation Models
+
+In real data, **rare gross outliers or “DNFs”** may occur (e.g. a solver fails or has an abnormally long time).  In a Gaussian state‑space (Kalman) model for learning, these can distort estimates.  Three approaches are common:
+
+- **Student‑t (robust) observation noise:**  Replace the Gaussian observation error with a heavy-tailed Student’s *t* distribution.  This automatically downweights large residuals.  Concretely, if \(y_t = H x_t + \epsilon_t\) with \(\epsilon_t\sim t_\nu(0,R)\), one can derive a *t*-Kalman update.  At each step compute the innovation \(e = y_t - H\hat x_{t|t-1}\) and its covariance \(S=H P_{t|t-1}H^T + R\).  Define the weight factor 
+  \[
+    \lambda_t \;=\; \frac{\nu + m}{\nu + e^T S^{-1} e},
+  \]
+  where \(m\) is the dimension of \(e\) (for a scalar this is \(\nu+1\over\nu+(e^2/S)\)).  Then use an **effective** measurement covariance \(R/\lambda_t\).  In practice the Kalman gain becomes  
+  \[
+    K_t = P_{t|t-1}H^T\,\bigl(H P_{t|t-1}H^T + R/\lambda_t\bigr)^{-1}, 
+    \quad 
+    \hat x_{t|t} = \hat x_{t|t-1} + K_t\,e, 
+    \quad 
+    P_{t|t} = (I - K_t H)P_{t|t-1}.
+  \]
+  Intuitively, a large residual \(e\) makes \(\lambda_t<1\), inflating the assumed measurement variance and thus reducing \(K_t\).  This is the **Student‑t robust Kalman filter**.  (One can derive these by expressing a *t* as a Gaussian scale-mixture or via MAP.  The key result is that the innovation is re‑weighted by \(\frac{\nu+1}{\nu + e^2/S}\).)  The heavy tails of the *t* make the filter less sensitive to outliers.  
+
+- **Censoring/truncation:**  One may simply **ignore or censor** extreme observations (e.g. treat any solve time >\(t_{\max}\) as a non-response).  In a Kalman framework, this is like a “Tobit” or censored update: if \(|e|>k\,\sqrt{\mathrm{Var}(e)}\), skip the update (or perform a censored update where the likelihood is truncated).  This avoids a huge residual entering the filter, but it effectively treats those measurements as missing or lower-bounded.  A drawback is that any trimmed data must be handled specially (the posterior needs to integrate the truncated likelihood).  Adaptive Tobit-Kalman filters have been proposed (e.g. setting dynamic censor limits).  In simple terms, one could say *“if \(y_t\) exceeds a cutoff, do not update the state”*.  This is easy to implement but loses information.  
+
+- **Mixture (spike) models:**  Introduce a latent *outlier* component.  For example, model \(y_t\) as a mixture: with high probability \((1-\pi)\) the normal Gaussian model applies; with small probability \(\pi\) an “outlier” distribution (a broad Gaussian or even point mass at failure) applies.  Equivalently, assume \(y_t = Hx_t + \epsilon_t\) where \(\epsilon_t\) comes from a mixture of \(N(0,R)\) and a very-wide or uniform noise.  In a Bayesian filter one can track the posterior probability that an observation was an outlier.  During inference, if an obs has low likelihood under the normal component, it is likely assigned to the outlier component, which then yields little update to \(x\).  This yields robustness similar to the *t*-noise approach.  The Kalman update under a 2-mixture can also be written out (it involves a weighted sum of Gaussian updates), but typically one uses an approximate or EM-like scheme.  
+
+- **Bias of dropping outliers:**  Naively throwing away long solves (DNFs) biases any summary statistics.  In a skewed distribution, removing large values gives a **downward-biased mean**.  For example, if times were exponential with mean \(\mu\) and we drop all \(x>k\), the conditional mean \(\mathbb{E}[X \mid X<k]\) is strictly less than \(\mu\).  In general, deleting high outliers underestimates the true mean of the underlying process (unless the distribution is symmetric).  Thus it is **not recommended** to simply discard extreme times before estimating a player’s skill.  Instead, one should either model them explicitly (via censoring or mixture) or use a robust estimator.  
+
+**Summary recommendations:**  For modeling completion times, a **log-normal** or **gamma** (constant-shape) model often fits well, especially if one observes roughly constant CV across skill levels.  The **ex-Gaussian** is useful for datasets with an obvious “slow tail” (capturing lapses with \(\tau\)), but note its tail is only exponential (lighter than lognormal).  The **Weibull** is flexible: if fitted shape \(k<1\) one gets a heavier tail than exponential, but most human times give \(k\gtrsim1\).  In fitting data, compare AIC/BIC across all these choices.  In state-space models of learning, use **Student-t observation noise** (Robust Kalman) to downweight occasional huge times.  This leads to a simple modified Kalman gain (see above) that self-tunes to residual size.  Alternatively, an outlier **mixture** (Gaussian + broad-spike) achieves robustness at the cost of extra parameters.  Pure truncation/censoring is workable (especially if “DNF” is truly a different outcome), but be aware it ignores the magnitude information of those trials.  In all cases, remember that discarding or ignoring data changes the implied distribution and can bias estimates. 
+
+**Robust (Student-t) Kalman update:**  For completeness, we summarize the update equations when measurement noise is Student’s \(t_\nu\).  Assume prior state \(\hat x_{t|t-1}\sim N(\,\cdot\,,P_{t|t-1})\) and measurement \(y_t=H\hat x_t+e_t\) with \(e_t\sim t_\nu(0,R)\).  Define the innovation \(r_t = y_t - H\hat x_{t|t-1}\) and its covariance \(S_t = H P_{t|t-1} H^T + R\).  Compute the scalar factor 
+\[
+  \lambda_t \;=\; \frac{\nu + 1}{\nu + r_t^T S_t^{-1} r_t}\,,
+\] 
+(note: for a 1D \(r\), this is \((\nu+1)/(\nu + r^2/S)\)).  Then **effective** observation covariance becomes \(R/\lambda_t\).  The Kalman gain and update are  
+\[
+  K_t \;=\; P_{t|t-1}H^T\,\bigl(H P_{t|t-1}H^T + R/\lambda_t\bigr)^{-1}, 
+  \qquad 
+  \hat x_{t|t} = \hat x_{t|t-1} + K_t\,r_t, 
+  \qquad 
+  P_{t|t} = (I - K_t H)P_{t|t-1}.
+\] 
+Because \(\lambda_t<1\) when \(\|r_t\|\) is large, this downweights big outliers.  These equations implement a Student-\(t\) observation model (e.g. via a Normal–Gamma mixture) in the Kalman filter. 
+
+**Sources:**  Standard references on response-time distributions note the right skew and heavy tail of human times.  The ex-Gaussian model and its parameters (Normal mean \(\mu,\sigma\) plus exponential mean \(\tau\)) are described in Heathcote *et al.* (1991).  Empirical fits often find log-normal and Weibull competitive with ex-Gaussian.  The asymptotic tail comparisons (e.g. log-normal heavier than gamma) and constant-CV property of log-normal/gamma are noted in statistical discussions.  The heavy-tail status of lognormal and Weibull-\(k<1\) is documented in heavy-tail literature.  Robust Kalman filter derivations with Student-\(t\) noise can be found in e.g. Aravkin *et al.* (2014) and related works (here we summarized the key equations).
