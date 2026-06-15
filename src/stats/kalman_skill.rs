@@ -108,6 +108,74 @@ fn normal_cdf(z: f64) -> f64 {
     0.5 * (1.0 + erf)
 }
 
+/// Inverse standard-normal CDF (Acklam's rational approximation, ~1e-9).
+fn inv_norm(p: f64) -> f64 {
+    const A: [f64; 6] = [
+        -3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+        1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00,
+    ];
+    const B: [f64; 5] = [
+        -5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+        6.680131188771972e+01, -1.328068155288572e+01,
+    ];
+    const C: [f64; 6] = [
+        -7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+        -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00,
+    ];
+    const D: [f64; 4] = [
+        7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+        3.754408661907416e+00,
+    ];
+    let pl = 0.02425;
+    if p < pl {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else if p <= 1.0 - pl {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    } else {
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    }
+}
+
+/// sinh-arcsinh shape transform of a standard-normal draw (Jones–Pewsey).
+/// `eps` = skew (>0 ⇒ right skew), `delta` = tail weight (<1 ⇒ heavier).
+/// Empirically fit on 3x3 within-week log-residuals: eps≈0.15, delta≈0.72–0.82.
+const SAS_EPS: f64 = 0.15;
+
+fn sas(z: f64, eps: f64, delta: f64) -> f64 {
+    ((z.asinh() + eps) / delta).sinh()
+}
+
+/// Tail-weight delta as a clamped linear ramp in log-skill (faster ⇒ lighter
+/// tails). Fit to the per-tier MLE: ~0.82 at sub-6, ~0.72 at 25s.
+fn sas_delta(level_logcs: f64) -> f64 {
+    (0.82 - 0.066 * (level_logcs - 6.31)).clamp(0.70, 0.84)
+}
+
+/// Mean and variance of the standardized SAS shape S(Z), by deterministic
+/// midpoint quadrature over the normal — so simulated solves can be rescaled to
+/// keep the filter's log-mean and log-variance exactly.
+fn sas_consts(eps: f64, delta: f64) -> (f64, f64) {
+    const K: usize = 512;
+    let mut m = 0.0;
+    let mut m2 = 0.0;
+    for k in 0..K {
+        let z = inv_norm((k as f64 + 0.5) / K as f64);
+        let s = sas(z, eps, delta);
+        m += s;
+        m2 += s * s;
+    }
+    m /= K as f64;
+    m2 /= K as f64;
+    (m, m2 - m * m)
+}
+
 fn trigamma(mut x: f64) -> f64 {
     let mut r = 0.0;
     while x < 6.0 {
@@ -170,11 +238,14 @@ struct PersonSeries {
 }
 
 /// Global model hyperparameters (log-time, per-week units).
+/// Trend is **decay-to-floor**: state [level ℓ, floor f], ℓ'=(1−k)ℓ+k·f, f'=f.
+/// (Field names retain `phi`/`q_eta`/`q_xi` for ABI minimalism but mean k / level
+/// noise / floor noise respectively.)
 #[derive(Clone, Copy)]
 struct Hyper {
-    q_eta: f64, // level process variance
-    q_xi: f64,  // slope process variance
-    phi: f64,   // trend damping
+    q_eta: f64, // level process variance (q_ℓ)
+    q_xi: f64,  // floor process variance (q_f) — floor drifts slowly
+    phi: f64,   // mean-reversion rate k toward the floor (per week)
     // Filter B (volatility) — fixed sensible values with floors.
     q_h: f64,
     h0: f64, // prior mean log-variance
@@ -190,43 +261,24 @@ type V2 = [f64; 2];
 /// `g` weeks under the damped-trend dynamics. Loop is capped; the long tail
 /// (where φ^i → 0) is added as a steady-state level term.
 fn gap_transition(h: &Hyper, g: i32) -> (M2, M2) {
-    let phi = h.phi;
+    // Decay-to-floor: single-step G = [[a, k],[0,1]], a = 1−k. Closed-form G^g and
+    // accumulated Q_g = Σ_{i=0}^{g-1} G^i Q (G^i)^T, Q = diag(q_ℓ, q_f).
+    let k = h.phi;
+    let a = (1.0 - k).max(0.0);
     let g = g.max(1);
-    // G^g = [[1, c_g],[0, phi^g]] with c_g = sum_{i=1}^{g} phi^i.
-    let phi_g = phi.powi(g);
-    let c_g = if (1.0 - phi).abs() < 1e-12 {
-        g as f64
-    } else {
-        phi * (1.0 - phi_g) / (1.0 - phi)
-    };
-    let g_eff: M2 = [[1.0, c_g], [0.0, phi_g]];
+    let (ql, qf) = (h.q_eta, h.q_xi);
+    let ag = a.powi(g);
+    let g_eff: M2 = [[ag, 1.0 - ag], [0.0, 1.0]];
 
-    // Q_g = sum_{i=0}^{g-1} G^i Q (G^i)^T, Q = diag(q_eta, q_xi).
-    // G^i = [[1, c_i],[0, phi^i]] with c_i = sum_{j=1}^{i} phi^j (c_0 = 0).
-    let cap = g.min(300);
-    let mut q: M2 = [[0.0; 2]; 2];
-    for i in 0..cap {
-        let phi_i = phi.powi(i);
-        let c_i = if (1.0 - phi).abs() < 1e-12 {
-            i as f64
-        } else {
-            phi * (1.0 - phi_i) / (1.0 - phi)
-        };
-        q[0][0] += h.q_eta + c_i * c_i * h.q_xi;
-        let off = c_i * phi_i * h.q_xi;
-        q[0][1] += off;
-        q[1][0] += off;
-        q[1][1] += phi_i * phi_i * h.q_xi;
-    }
-    if g > cap {
-        // Tail: phi^i ≈ 0, c_i ≈ phi/(1-phi); each step adds ~ q_eta + c∞² q_xi to level.
-        let c_inf = if (1.0 - phi).abs() < 1e-12 {
-            cap as f64
-        } else {
-            phi / (1.0 - phi)
-        };
-        q[0][0] += (g - cap) as f64 * (h.q_eta + c_inf * c_inf * h.q_xi);
-    }
+    let one_ma = (1.0 - a).max(1e-12);
+    let one_ma2 = (1.0 - a * a).max(1e-12);
+    let sa = (1.0 - a.powi(g)) / one_ma; // Σ a^i
+    let sa2 = (1.0 - a.powi(2 * g)) / one_ma2; // Σ a^{2i}
+    let gf = g as f64;
+    // G^i = [[a^i, 1−a^i],[0,1]] ⇒ contribution [[a^{2i}qℓ+(1−a^i)²qf, (1−a^i)qf],[·,qf]].
+    let q00 = ql * sa2 + qf * (gf - 2.0 * sa + sa2);
+    let q01 = qf * (gf - sa);
+    let q: M2 = [[q00, q01], [q01, qf * gf]];
     (g_eff, q)
 }
 
@@ -260,6 +312,260 @@ fn inv2(a: M2) -> M2 {
     [[a[1][1] * id, -a[0][1] * id], [-a[1][0] * id, a[0][0] * id]]
 }
 
+// ── 3×3 helpers for the local-quadratic trend experiment ─────────────────────
+type M3 = [[f64; 3]; 3];
+type V3 = [f64; 3];
+fn mm3(a: M3, b: M3) -> M3 {
+    let mut o = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            o[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    o
+}
+fn t3(a: M3) -> M3 {
+    let mut o = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            o[i][j] = a[j][i];
+        }
+    }
+    o
+}
+fn add3(a: M3, b: M3) -> M3 {
+    let mut o = a;
+    for i in 0..3 {
+        for j in 0..3 {
+            o[i][j] += b[i][j];
+        }
+    }
+    o
+}
+fn mv3(a: M3, v: V3) -> V3 {
+    [
+        a[0][0] * v[0] + a[0][1] * v[1] + a[0][2] * v[2],
+        a[1][0] * v[0] + a[1][1] * v[1] + a[1][2] * v[2],
+        a[2][0] * v[0] + a[2][1] * v[1] + a[2][2] * v[2],
+    ]
+}
+
+/// Local-quadratic trend hyperparameters: state [level, velocity, acceleration],
+/// ℓ'=ℓ+v, v'=v+a, a'=phi_a·a; process noise diag(qe,qv,qa). Same obs/volatility
+/// model as the 2-state (h0,q_h,r_min,r_max reused from the fitted `Hyper`).
+#[derive(Clone, Copy)]
+struct Hyper3 {
+    qe: f64,
+    qv: f64,
+    qa: f64,
+    phi_a: f64,
+}
+
+/// Forward 3-state filter, returns (weighted one-step loglik, innovation accumulators).
+/// `(z_sum, z2_sum, z_n, age_zsum[4], age_z2[4], age_n[4])`.
+type Z3 = (f64, f64, u64, [f64; 4], [f64; 4], [u64; 4]);
+fn run3_eval(s: &PersonSeries, h3: &Hyper3, base: &Hyper, weight: f64) -> (f64, Z3) {
+    let m = s.weeks.len();
+    let mut hb = base.h0;
+    let mut pb = 4.0;
+    let g: M3 = [[1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 0.0, h3.phi_a]];
+    let q: M3 = [[h3.qe, 0.0, 0.0], [0.0, h3.qv, 0.0], [0.0, 0.0, h3.qa]];
+    let mut x: V3 = [s.weeks[0].ybar, 0.0, 0.0];
+    let mut p: M3 = [[0.25, 0.0, 0.0], [0.0, 0.04, 0.0], [0.0, 0.0, 0.01]];
+    let mut loglik = 0.0;
+    let (mut z_sum, mut z2_sum, mut z_n) = (0.0f64, 0.0f64, 0u64);
+    let (mut azs, mut az2, mut an) = ([0.0f64; 4], [0.0f64; 4], [0u64; 4]);
+    let wk0 = s.weeks[0].wk;
+
+    for t in 0..m {
+        let w = &s.weeks[t];
+        if t > 0 {
+            let gap = (w.wk - s.weeks[t - 1].wk).max(1);
+            for _ in 0..gap.min(156) {
+                x = mv3(g, x);
+                p = add3(mm3(mm3(g, p), t3(g)), q);
+            }
+            pb += base.q_h * gap as f64;
+        }
+        let sigma2 = hb.exp().clamp(base.r_min, base.r_max);
+        let r_t = sigma2 / (w.n as f64);
+        let innov = w.ybar - x[0];
+        let f = p[0][0] + r_t;
+        loglik += -0.5 * (f.ln() + innov * innov / f);
+        if t > 0 {
+            let z = innov / f.sqrt();
+            z_sum += z;
+            z2_sum += z * z;
+            z_n += 1;
+            let age = w.wk - wk0;
+            let b = if age < 8 { 0 } else if age < 52 { 1 } else if age < 156 { 2 } else { 3 };
+            azs[b] += z;
+            az2[b] += z * z;
+            an[b] += 1;
+        }
+        let lambda = (NU + 1.0) / (NU + innov * innov / f);
+        let r_eff = r_t / lambda;
+        let f_eff = p[0][0] + r_eff;
+        let k: V3 = [p[0][0] / f_eff, p[1][0] / f_eff, p[2][0] / f_eff];
+        x = [x[0] + k[0] * innov, x[1] + k[1] * innov, x[2] + k[2] * innov];
+        // Joseph form, Z = [1,0,0].
+        let ikz: M3 = [[1.0 - k[0], 0.0, 0.0], [-k[1], 1.0, 0.0], [-k[2], 0.0, 1.0]];
+        let mut pn = mm3(mm3(ikz, p), t3(ikz));
+        for i in 0..3 {
+            for j in 0..3 {
+                pn[i][j] += k[i] * k[j] * r_eff;
+            }
+        }
+        p = pn;
+        if w.n >= 2 && w.s2 > 0.0 {
+            let yl = w.s2.ln() - log_var_correction(w.n);
+            let rl = log_var_noise(w.n);
+            let s_inn = pb + rl;
+            let kb = pb / s_inn;
+            hb += kb * (yl - hb);
+            pb = (1.0 - kb) * pb;
+            if pb < base.q_h {
+                pb = base.q_h;
+            }
+        }
+    }
+    (loglik * weight, (z_sum, z2_sum, z_n, azs, az2, an))
+}
+
+fn pooled_loglik3(sample: &[(&PersonSeries, f64)], h3: &Hyper3, base: &Hyper) -> f64 {
+    sample.par_iter().map(|(s, w)| run3_eval(s, h3, base, *w).0).sum()
+}
+
+/// Decay-to-floor trend: state [level ℓ, floor f], ℓ'=(1−k)ℓ+k·f, f'=f.
+/// Velocity is derived (−k(ℓ−f)); the floor is a slowly-drifting per-person latent
+/// (= projected potential). Empirically k≈0.0135/wk (1-yr gap half-life).
+#[derive(Clone, Copy)]
+struct HyperMR {
+    k: f64,
+    q_l: f64,
+    q_f: f64,
+}
+
+fn runmr_eval(s: &PersonSeries, h: &HyperMR, base: &Hyper, weight: f64) -> (f64, Z3) {
+    let m = s.weeks.len();
+    let mut hb = base.h0;
+    let mut pb = 4.0;
+    let a = 1.0 - h.k;
+    let g: M2 = [[a, h.k], [0.0, 1.0]];
+    let q: M2 = [[h.q_l, 0.0], [0.0, h.q_f]];
+    let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar];
+    let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]];
+    let mut loglik = 0.0;
+    let (mut z_sum, mut z2_sum, mut z_n) = (0.0f64, 0.0f64, 0u64);
+    let (mut azs, mut az2, mut an) = ([0.0f64; 4], [0.0f64; 4], [0u64; 4]);
+    let wk0 = s.weeks[0].wk;
+
+    for t in 0..m {
+        let w = &s.weeks[t];
+        if t > 0 {
+            let gap = (w.wk - s.weeks[t - 1].wk).max(1);
+            for _ in 0..gap.min(156) {
+                x = mat_vec(g, x);
+                p = mat_add(mat_mul(mat_mul(g, p), transpose(g)), q);
+            }
+            pb += base.q_h * gap as f64;
+        }
+        let sigma2 = hb.exp().clamp(base.r_min, base.r_max);
+        let r_t = sigma2 / (w.n as f64);
+        let innov = w.ybar - x[0];
+        let f = p[0][0] + r_t;
+        loglik += -0.5 * (f.ln() + innov * innov / f);
+        if t > 0 {
+            let z = innov / f.sqrt();
+            z_sum += z;
+            z2_sum += z * z;
+            z_n += 1;
+            let age = w.wk - wk0;
+            let b = if age < 8 { 0 } else if age < 52 { 1 } else if age < 156 { 2 } else { 3 };
+            azs[b] += z;
+            az2[b] += z * z;
+            an[b] += 1;
+        }
+        let lambda = (NU + 1.0) / (NU + innov * innov / f);
+        let r_eff = r_t / lambda;
+        let f_eff = p[0][0] + r_eff;
+        let kg: V2 = [p[0][0] / f_eff, p[1][0] / f_eff];
+        x = [x[0] + kg[0] * innov, x[1] + kg[1] * innov];
+        let ikz: M2 = [[1.0 - kg[0], 0.0], [-kg[1], 1.0]];
+        let mut pn = mat_mul(mat_mul(ikz, p), transpose(ikz));
+        pn[0][0] += kg[0] * kg[0] * r_eff;
+        pn[0][1] += kg[0] * kg[1] * r_eff;
+        pn[1][0] += kg[1] * kg[0] * r_eff;
+        pn[1][1] += kg[1] * kg[1] * r_eff;
+        p = pn;
+        if w.n >= 2 && w.s2 > 0.0 {
+            let yl = w.s2.ln() - log_var_correction(w.n);
+            let rl = log_var_noise(w.n);
+            let s_inn = pb + rl;
+            let kb = pb / s_inn;
+            hb += kb * (yl - hb);
+            pb = (1.0 - kb) * pb;
+            if pb < base.q_h {
+                pb = base.q_h;
+            }
+        }
+    }
+    (loglik * weight, (z_sum, z2_sum, z_n, azs, az2, an))
+}
+
+fn pooled_loglikmr(sample: &[(&PersonSeries, f64)], h: &HyperMR, base: &Hyper) -> f64 {
+    sample.par_iter().map(|(s, w)| runmr_eval(s, h, base, *w).0).sum()
+}
+
+fn fit_hypermr(sample: &[(&PersonSeries, f64)], base: &Hyper, init: HyperMR) -> HyperMR {
+    let mut h = init;
+    let mut best = pooled_loglikmr(sample, &h, base);
+    let factors = [0.5, 0.7, 1.4, 2.0];
+    for _pass in 0..3 {
+        for which in 0..3 {
+            for &f in &factors {
+                let mut c = h;
+                match which {
+                    0 => c.k = (h.k * f).clamp(0.001, 0.2),
+                    1 => c.q_l *= f,
+                    _ => c.q_f *= f,
+                }
+                let ll = pooled_loglikmr(sample, &c, base);
+                if ll > best {
+                    best = ll;
+                    h = c;
+                }
+            }
+        }
+    }
+    h
+}
+
+fn fit_hyper3(sample: &[(&PersonSeries, f64)], base: &Hyper, init: Hyper3) -> Hyper3 {
+    let mut h = init;
+    let mut best = pooled_loglik3(sample, &h, base);
+    let factors = [0.5, 0.7, 1.4, 2.0];
+    for _pass in 0..3 {
+        for which in 0..4 {
+            for &f in &factors {
+                let mut c = h;
+                match which {
+                    0 => c.qe *= f,
+                    1 => c.qv *= f,
+                    2 => c.qa *= f,
+                    _ => c.phi_a = (1.0 - (1.0 - h.phi_a) * f).clamp(0.50, 0.999),
+                }
+                let ll = pooled_loglik3(sample, &c, base);
+                if ll > best {
+                    best = ll;
+                    h = c;
+                }
+            }
+        }
+    }
+    h
+}
+
 /// Smoothed output of the coupled filters for one person.
 struct Smoothed {
     /// (wk, level, slope, level_var) at each active week (smoothed).
@@ -267,6 +573,16 @@ struct Smoothed {
     h_last: f64,        // smoothed log within-week variance at last week
     loglik_weighted: f64,
     n_weeks: usize,
+    /// One-step innovation calibration accumulators (skip t=0 prior; Gaussian F).
+    /// z = (ybar − predicted level)/√F. Calibrated ⇒ Var(z)=1, mean z=0.
+    z_sum: f64,
+    z2_sum: f64,
+    z_n: u64,
+    epi_frac_sum: f64, // Σ p00/F: epistemic (level) share of predictive variance
+    /// Same z's split by career age (weeks since first comp): <8, 8–52, 52–156, >156.
+    age_zsum: [f64; 4],
+    age_z2: [f64; 4],
+    age_n: [u64; 4],
 }
 
 /// Run Filter A + Filter B forward, then the RTS smoother for Filter A.
@@ -287,9 +603,14 @@ fn run_person(s: &PersonSeries, h: &Hyper, weight: f64, excl: Option<i32>) -> Sm
     let mut p_pred = vec![[[0.0f64; 2]; 2]; m];
     let mut g_used = vec![[[1.0f64, 0.0], [0.0, 1.0]]; m];
 
-    let mut x: V2 = [s.weeks[0].ybar, 0.0];
-    let mut p: M2 = [[0.25, 0.0], [0.0, 0.04]]; // moderately diffuse start
+    let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar]; // floor init = level
+    let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]]; // floor diffuse
     let mut loglik = 0.0;
+    let (mut z_sum, mut z2_sum, mut z_n, mut epi_frac_sum) = (0.0f64, 0.0f64, 0u64, 0.0f64);
+    let mut age_zsum = [0.0f64; 4];
+    let mut age_z2 = [0.0f64; 4];
+    let mut age_n = [0u64; 4];
+    let wk0 = s.weeks[0].wk;
 
     for t in 0..m {
         let w = &s.weeks[t];
@@ -322,6 +643,19 @@ fn run_person(s: &PersonSeries, h: &Hyper, weight: f64, excl: Option<i32>) -> Sm
             let f = p[0][0] + r_t;
             // Gaussian predictive log-lik for hyperparameter fitting.
             loglik += -0.5 * (f.ln() + innov * innov / f);
+            // Innovation calibration (skip t=0: that's the diffuse prior, not a prediction).
+            if t > 0 {
+                let z = innov / f.sqrt();
+                z_sum += z;
+                z2_sum += z * z;
+                z_n += 1;
+                epi_frac_sum += p[0][0] / f;
+                let age = w.wk - wk0;
+                let b = if age < 8 { 0 } else if age < 52 { 1 } else if age < 156 { 2 } else { 3 };
+                age_zsum[b] += z;
+                age_z2[b] += z * z;
+                age_n[b] += 1;
+            }
             let lambda = (NU + 1.0) / (NU + innov * innov / f);
             let r_eff = r_t / lambda;
             let f_eff = p[0][0] + r_eff;
@@ -370,7 +704,19 @@ fn run_person(s: &PersonSeries, h: &Hyper, weight: f64, excl: Option<i32>) -> Sm
         .map(|t| (s.weeks[t].wk, xs[t][0], xs[t][1], ps[t][0][0].max(0.0)))
         .collect();
 
-    Smoothed { nodes, h_last: hb, loglik_weighted: loglik * weight, n_weeks: m }
+    Smoothed {
+        nodes,
+        h_last: hb,
+        loglik_weighted: loglik * weight,
+        n_weeks: m,
+        z_sum,
+        z2_sum,
+        z_n,
+        epi_frac_sum,
+        age_zsum,
+        age_z2,
+        age_n,
+    }
 }
 
 // ── output structs ──────────────────────────────────────────────────────────
@@ -381,8 +727,9 @@ struct RankEntry {
     name: String,
     cid: String,
     est: f64,             // exp(level) projected to current week, centiseconds
+    potential: f64,       // exp(floor) — estimated personal asymptote, centiseconds
     level_sd: f64,        // sd of level, log units
-    velocity_pct_wk: f64, // (exp(slope)-1)*100, %/week (negative = improving)
+    velocity_pct_wk: f64, // (exp(velocity)-1)*100, %/week (negative = improving)
     cv: f64,              // per-solve coefficient of variation (≈ sqrt(exp(h)))
     dnf_rate: f64,
     n_weeks: usize,
@@ -428,12 +775,72 @@ struct SimResult {
     p_wr_ao5: f64,
 }
 
+/// Precomputed per-competitor sim parameters (skew shape resolved once).
+#[derive(Clone, Copy)]
+struct SimParams {
+    level: f64,
+    lvl_sd: f64,
+    sd: f64,
+    dnf: f64,
+    eps: f64,
+    delta: f64,
+    sas_m: f64,
+    sas_scale: f64,
+}
+
+impl SimParams {
+    fn new(level: f64, level_var: f64, sigma2: f64, dnf: f64) -> Self {
+        let eps = SAS_EPS;
+        let delta = sas_delta(level);
+        let (sas_m, sas_v) = sas_consts(eps, delta);
+        SimParams {
+            level,
+            lvl_sd: level_var.sqrt(),
+            sd: sigma2.sqrt(),
+            dnf,
+            eps,
+            delta,
+            sas_m,
+            sas_scale: 1.0 / sas_v.sqrt(),
+        }
+    }
+}
+
+/// One Monte-Carlo ao5 draw (centiseconds; +∞ = DNF average) for a competitor,
+/// using the skew (sinh-arcsinh) emission. Draws the latent mean once, then 5 solves.
+/// `shared` adds a per-scramble log offset common to all finalists (scramble luck).
+fn sim_one_ao5(p: &SimParams, shared: &[f64; 5], rng: &mut Rng) -> f64 {
+    let mean = p.level + p.lvl_sd * rng.normal();
+    let mut v = [0.0f64; 5];
+    let mut nd = 0;
+    for (k, s) in v.iter_mut().enumerate() {
+        if rng.unit() < p.dnf {
+            *s = f64::INFINITY;
+            nd += 1;
+        } else {
+            let w = (sas(rng.normal(), p.eps, p.delta) - p.sas_m) * p.sas_scale;
+            *s = (mean + p.sd * w + shared[k]).exp();
+        }
+    }
+    if nd >= 2 {
+        return f64::INFINITY;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (v[1] + v[2] + v[3]) / 3.0
+}
+
 /// Monte-Carlo an ao5 distribution from the projected state.
 fn simulate(level: f64, level_var: f64, sigma2: f64, dnf_p: f64, wr_single: i32, wr_ao5: i32,
             subs: &[i32], seed: u64) -> SimResult {
     let mut rng = Rng(seed | 1);
     let sd = sigma2.sqrt();
     let lvl_sd = level_var.sqrt();
+    // sinh-arcsinh shape: skew + fat right tail, normalized to keep mean=level,
+    // var=sigma2. delta tracks skill (lighter tails for faster solvers).
+    let eps = SAS_EPS;
+    let delta = sas_delta(level);
+    let (sas_m, sas_v) = sas_consts(eps, delta);
+    let sas_scale = 1.0 / sas_v.sqrt();
     let mut sum_ao5 = 0.0;
     let mut cnt_ao5 = 0u64;
     let mut sub = vec![0u64; subs.len()];
@@ -449,7 +856,8 @@ fn simulate(level: f64, level_var: f64, sigma2: f64, dnf_p: f64, wr_single: i32,
                 *s = f64::INFINITY;
                 n_dnf += 1;
             } else {
-                let t = (mean + sd * rng.normal()).exp();
+                let w = (sas(rng.normal(), eps, delta) - sas_m) * sas_scale;
+                let t = (mean + sd * w).exp();
                 *s = t;
                 if t < best {
                     best = t;
@@ -498,7 +906,8 @@ fn pooled_loglik(sample: &[(&PersonSeries, f64)], h: &Hyper) -> f64 {
 fn fit_hyper(sample: &[(&PersonSeries, f64)], base: Hyper) -> Hyper {
     let mut h = base;
     let mut best = pooled_loglik(sample, &h);
-    // Coordinate ascent over multiplicative grids for q_eta, q_xi, and φ.
+    // Coordinate ascent over multiplicative grids for q_ℓ (q_eta), q_f (q_xi),
+    // and the mean-reversion rate k (phi).
     let factors = [0.5, 0.7, 1.4, 2.0];
     for _pass in 0..3 {
         for which in 0..3 {
@@ -507,9 +916,7 @@ fn fit_hyper(sample: &[(&PersonSeries, f64)], base: Hyper) -> Hyper {
                 match which {
                     0 => cand.q_eta *= f,
                     1 => cand.q_xi *= f,
-                    _ => {
-                        cand.phi = (1.0 - (1.0 - h.phi) * f).clamp(0.50, 0.999);
-                    }
+                    _ => cand.phi = (h.phi * f).clamp(0.001, 0.2),
                 }
                 let ll = pooled_loglik(sample, &cand);
                 if ll > best {
@@ -520,6 +927,40 @@ fn fit_hyper(sample: &[(&PersonSeries, f64)], base: Hyper) -> Hyper {
         }
     }
     h
+}
+
+/// Pooled one-step innovation mean z̄ over the sample, restricted to career age
+/// ≥ 8 weeks (the diffuse-prior weeks <8 are not meaningful predictions).
+fn pooled_zbar(sample: &[(&PersonSeries, f64)], h: &Hyper) -> f64 {
+    let (zs, zn) = sample
+        .par_iter()
+        .map(|(s, _)| {
+            let sm = run_person(s, h, 1.0, None);
+            (
+                sm.age_zsum[1] + sm.age_zsum[2] + sm.age_zsum[3],
+                sm.age_n[1] + sm.age_n[2] + sm.age_n[3],
+            )
+        })
+        .reduce(|| (0.0, 0u64), |a, b| (a.0 + b.0, a.1 + b.1));
+    if zn == 0 { 0.0 } else { zs / zn as f64 }
+}
+
+/// Stage 1 (mean): calibrate the trend-damping φ so the pooled lag z̄ ≈ 0.
+/// z̄ increases monotonically with φ (more slope projected ⇒ less under-prediction),
+/// so bisect. Clamps to [0.80, 0.995]; if even φ=0.995 still lags, returns the cap.
+fn calibrate_phi(sample: &[(&PersonSeries, f64)], h: &Hyper) -> f64 {
+    let (mut lo, mut hi) = (0.80f64, 0.995f64);
+    for _ in 0..20 {
+        let mid = 0.5 * (lo + hi);
+        let mut hm = *h;
+        hm.phi = mid;
+        if pooled_zbar(sample, &hm) < 0.0 {
+            lo = mid; // still under-predicting ⇒ need more persistence
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 // ── main entry ──────────────────────────────────────────────────────────────
@@ -672,9 +1113,9 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
 
     // ── Step 3: hyperparameter fit on a speed-weighted subsample ──
     let base = Hyper {
-        q_eta: 0.0009, // (0.03 log/wk)²
-        q_xi: 9e-6,    // (0.003 log/wk)²
-        phi: 0.95,
+        q_eta: 0.00015, // q_ℓ: level process variance
+        q_xi: 0.00018,  // q_f: floor drift variance
+        phi: 0.0265,    // k: mean-reversion rate (≈6-month gap half-life)
         q_h: 0.02,
         h0,
         r_min: global_cv2 * 0.02,
@@ -697,12 +1138,76 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     eprintln!("  kalman_skill: fitting hyperparameters on {} series", sample.len());
     let hyper = fit_hyper(&sample, base);
     eprintln!(
-        "  kalman_skill: φ={:.4}, σ_η={:.4}/wk, σ_ξ={:.5}/wk (half-life {:.0} wk)",
+        "  kalman_skill: decay-to-floor k={:.4}/wk (gap half-life {:.0} wk), q_ℓ={:.5}/wk, q_f={:.5}/wk",
         hyper.phi,
+        std::f64::consts::LN_2 / hyper.phi.max(1e-6),
         hyper.q_eta.sqrt(),
         hyper.q_xi.sqrt(),
-        std::f64::consts::LN_2 / (1.0 - hyper.phi).max(1e-6),
     );
+
+    // ── Is per-person specificity warranted? (333) Held-out forward-prediction
+    //    test at ~9-month horizon: A=no change, B=global rate-by-level curve,
+    //    C=per-person floor projection. Compare by out-of-sample RMSE. ──
+    if event == "333" {
+        let k = hyper.phi;
+        const H: f64 = 39.0; // horizon weeks (center of [+26,+52])
+        const NB: usize = 14;
+        let (lo, hi) = (450.0_f64.ln(), 4000.0_f64.ln());
+        let lbin = |l: f64| (((l - lo) / (hi - lo) * NB as f64) as i64).clamp(0, NB as i64 - 1) as usize;
+        // Anchors: (filtered level, floor, actual future level).
+        let anchors: Vec<(f64, f64, f64)> = series
+            .par_iter()
+            .flat_map(|s| {
+                let lf = forward_lf(s, &hyper);
+                let mut out = Vec::new();
+                for (i, &(wk, level, floor)) in lf.iter().enumerate() {
+                    let (mut fs, mut fn_) = (0.0f64, 0usize);
+                    for w in &s.weeks[i + 1..] {
+                        if w.wk <= wk + 26 { continue; }
+                        if w.wk > wk + 52 { break; }
+                        fs += w.ybar * w.n as f64;
+                        fn_ += w.n;
+                    }
+                    if fn_ >= 10 {
+                        out.push((level, floor, fs / fn_ as f64));
+                    }
+                }
+                out
+            })
+            .collect();
+        // Global rate-by-level curve μ_v (mean actual future rate per level bin).
+        let mut rs = vec![0.0f64; NB];
+        let mut rn = vec![0u64; NB];
+        for &(level, _, fut) in &anchors {
+            let b = lbin(level);
+            rs[b] += (fut - level) / H;
+            rn[b] += 1;
+        }
+        let muv: Vec<f64> = (0..NB).map(|b| if rn[b] > 0 { rs[b] / rn[b] as f64 } else { 0.0 }).collect();
+        // Score A/B/C; report RMSE overall and for fast (level < ln 1000).
+        let mut e = [[0.0f64; 3]; 2]; // [all, fast] × [A,B,C] sum sq err
+        let mut n = [0u64; 2];
+        for &(level, floor, fut) in &anchors {
+            let a = level;
+            let b = level + muv[lbin(level)] * H;
+            let c = floor + (level - floor) * (1.0 - k).powi(H as i32);
+            let (ea, eb, ec) = ((a - fut).powi(2), (b - fut).powi(2), (c - fut).powi(2));
+            e[0][0] += ea; e[0][1] += eb; e[0][2] += ec; n[0] += 1;
+            if level < 1000.0_f64.ln() {
+                e[1][0] += ea; e[1][1] += eb; e[1][2] += ec; n[1] += 1;
+            }
+        }
+        let rmse = |ss: f64, cnt: u64| (ss / cnt.max(1) as f64).sqrt();
+        eprintln!("  kalman_skill: FLOOR-VALUE TEST (held-out {:.0}wk, n={}):", H, n[0]);
+        eprintln!(
+            "    RMSE (log) — all:  A(no-change)={:.4}  B(global curve)={:.4}  C(per-person floor)={:.4}",
+            rmse(e[0][0], n[0]), rmse(e[0][1], n[0]), rmse(e[0][2], n[0])
+        );
+        eprintln!(
+            "    RMSE (log) — fast: A={:.4}  B={:.4}  C={:.4}  (n={})",
+            rmse(e[1][0], n[1]), rmse(e[1][1], n[1]), rmse(e[1][2], n[1]), n[1]
+        );
+    }
 
     // ── Step 4: smooth everyone, project to current week, simulate top-N ──
     let target_wk = series.iter().flat_map(|s| s.weeks.last()).map(|w| w.wk).max().unwrap_or(0);
@@ -712,7 +1217,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         est: f64,
         level: f64,
         level_var: f64,
-        slope: f64,
+        floor: f64,    // estimated personal floor (potential), log-cs
+        velocity: f64, // derived weekly improvement (log/wk, negative = faster)
         h_last: f64,
         dnf_rate: f64,
         last_wk: i32,
@@ -722,31 +1228,22 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         .enumerate()
         .map(|(idx, s)| {
             let sm = run_person(s, &hyper, 1.0, None);
-            let (last_wk, level, slope_raw, lvar) = *sm.nodes.last().unwrap();
-            // Shrink the trend toward 0 for short histories (few weeks → noisy
-            // slope) and clamp it, so we never extrapolate a wild improvement.
-            let rel = ((s.weeks.len() as f64 - 2.0) / 10.0).clamp(0.0, 1.0);
-            let slope = (slope_raw * rel).clamp(-0.05, 0.05); // ≤ ~5%/week
-            // Project to the current week: cap the slope horizon (stale solvers
-            // aren't assumed to keep improving) but let variance grow over the
-            // full gap.
+            let (last_wk, level, floor, lvar) = *sm.nodes.last().unwrap();
+            let k = hyper.phi;
+            // Derived velocity = mean-reversion toward floor: −k·(level − floor).
+            let velocity = -k * (level - floor);
+            // Project to the current week. Cap the improvement horizon (stale
+            // solvers aren't assumed to keep training toward their floor) but let
+            // variance grow over the full gap. ℓ' = floor + (ℓ−floor)·(1−k)^g.
             let g_full = (target_wk - last_wk).max(0);
-            let g_slope = g_full.min(26);
-            let phi = hyper.phi;
-            let c_slope = if g_slope == 0 {
-                0.0
-            } else if (1.0 - phi).abs() < 1e-12 {
-                g_slope as f64
-            } else {
-                phi * (1.0 - phi.powi(g_slope)) / (1.0 - phi)
-            };
-            let level_p = level + c_slope * slope;
+            let g_proj = g_full.min(26);
+            let level_p = floor + (level - floor) * (1.0 - k).powi(g_proj);
             let lvar_p = if g_full == 0 {
                 lvar
             } else {
                 let (g_eff, q_g) = gap_transition(&hyper, g_full);
                 mat_add(
-                    mat_mul(mat_mul(g_eff, [[lvar, 0.0], [0.0, hyper.q_xi.max(1e-9)]]), transpose(g_eff)),
+                    mat_mul(mat_mul(g_eff, [[lvar, 0.0], [0.0, lvar]]), transpose(g_eff)),
                     q_g,
                 )[0][0]
             };
@@ -758,7 +1255,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                 est: level_p.exp(),
                 level: level_p,
                 level_var: lvar_p,
-                slope,
+                floor,
+                velocity,
                 h_last: sm.h_last,
                 dnf_rate,
                 last_wk,
@@ -816,8 +1314,9 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                 name: s.name.clone(),
                 cid: s.country.clone(),
                 est: c.est,
+                potential: c.floor.exp(),
                 level_sd: c.level_var.sqrt(),
-                velocity_pct_wk: (c.slope.exp() - 1.0) * 100.0,
+                velocity_pct_wk: (c.velocity.exp() - 1.0) * 100.0,
                 cv: c.h_last.exp().sqrt(),
                 dnf_rate: c.dnf_rate,
                 n_weeks: s.weeks.len(),
@@ -909,8 +1408,8 @@ fn diagnostics(series: &[PersonSeries], h: &Hyper) {
             let mut out = Vec::new();
             let first = s.weeks[0].wk;
             // Re-run forward filter, recording one-step predictions on level.
-            let mut x: V2 = [s.weeks[0].ybar, 0.0];
-            let mut p: M2 = [[0.25, 0.0], [0.0, 0.04]];
+            let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar]; // floor init = level
+            let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]]; // floor diffuse
             for t in 1..s.weeks.len() {
                 let gap = s.weeks[t].wk - s.weeks[t - 1].wk;
                 let (g_eff, q_g) = gap_transition(h, gap);
@@ -953,8 +1452,8 @@ fn forward_levels(s: &PersonSeries, h: &Hyper) -> Vec<(i32, f64, f64, f64)> {
     let mut out = Vec::with_capacity(m.saturating_sub(1));
     let mut hb = h.h0;
     let mut pb = 4.0;
-    let mut x: V2 = [s.weeks[0].ybar, 0.0];
-    let mut p: M2 = [[0.25, 0.0], [0.0, 0.04]];
+    let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar]; // floor init = level
+    let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]]; // floor diffuse
     for t in 0..m {
         let w = &s.weeks[t];
         if t > 0 {
@@ -990,6 +1489,52 @@ fn forward_levels(s: &PersonSeries, h: &Hyper) -> Vec<(i32, f64, f64, f64)> {
             hb += kb * (yl - hb);
             pb = ((1.0 - kb) * pb).max(h.q_h);
         }
+    }
+    out
+}
+
+/// Causal forward filter returning the post-update filtered (wk, level, floor)
+/// at each observed week — for held-out forward-prediction tests.
+fn forward_lf(s: &PersonSeries, h: &Hyper) -> Vec<(i32, f64, f64)> {
+    let m = s.weeks.len();
+    let mut out = Vec::with_capacity(m);
+    let mut hb = h.h0;
+    let mut pb = 4.0;
+    let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar];
+    let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]];
+    for t in 0..m {
+        let w = &s.weeks[t];
+        if t > 0 {
+            let gap = w.wk - s.weeks[t - 1].wk;
+            let (g_eff, q_g) = gap_transition(h, gap);
+            x = mat_vec(g_eff, x);
+            p = mat_add(mat_mul(mat_mul(g_eff, p), transpose(g_eff)), q_g);
+            pb += h.q_h * gap.max(1) as f64;
+        }
+        let sigma2 = hb.exp().clamp(h.r_min, h.r_max);
+        let r_t = sigma2 / (w.n as f64);
+        let innov = w.ybar - x[0];
+        let f = p[0][0] + r_t;
+        let lambda = (NU + 1.0) / (NU + innov * innov / f);
+        let r_eff = r_t / lambda;
+        let f_eff = p[0][0] + r_eff;
+        let kg: V2 = [p[0][0] / f_eff, p[1][0] / f_eff];
+        x = [x[0] + kg[0] * innov, x[1] + kg[1] * innov];
+        let ikz: M2 = [[1.0 - kg[0], 0.0], [-kg[1], 1.0]];
+        let mut pn = mat_mul(mat_mul(ikz, p), transpose(ikz));
+        pn[0][0] += kg[0] * kg[0] * r_eff;
+        pn[0][1] += kg[0] * kg[1] * r_eff;
+        pn[1][0] += kg[1] * kg[0] * r_eff;
+        pn[1][1] += kg[1] * kg[1] * r_eff;
+        p = pn;
+        if w.n >= 2 && w.s2 > 0.0 {
+            let yl = w.s2.ln() - log_var_correction(w.n);
+            let rl = log_var_noise(w.n);
+            let kb = pb / (pb + rl);
+            hb += kb * (yl - hb);
+            pb = ((1.0 - kb) * pb).max(h.q_h);
+        }
+        out.push((w.wk, x[0], x[1]));
     }
     out
 }
@@ -1186,6 +1731,149 @@ fn validate(
         sh(kw, ew), sh(ew, kw), sh(kw2, pw), sh(pw, kw2)
     );
 
+    // ── MC competition calibration: win/podium reliability on strong finals ──
+    // For each strong final (3rd-place sub-8), Monte-Carlo the whole field with the
+    // skew emission, get each finalist's P(win) and P(podium), and check those
+    // probabilities against realized outcomes in 10 prediction buckets (reliability
+    // diagram) plus a Brier score. Tests whether the simulator's odds are honest.
+    const R_MC: usize = 3000;
+    // Reliability accumulators for one sim variant.
+    struct Rel {
+        win_pred: [f64; 10],
+        win_act: [f64; 10],
+        win_n: [u32; 10],
+        pod_pred: [f64; 10],
+        pod_act: [f64; 10],
+        pod_n: [u32; 10],
+        brier_w: f64,
+        brier_p: f64,
+        n_pred: u64,
+        n_finals: u64,
+    }
+    // Run the win/podium MC over strong finals under (lvl_scale, sd_scale, var_scr):
+    // lvl_scale scales the skill-posterior sd, sd_scale the per-solve sd, var_scr is
+    // the shared per-scramble log-variance (0 = iid scrambles).
+    let run_variant = |lvl_scale: f64, sd_scale: f64, var_scr: f64| -> Rel {
+        let scr_sd = var_scr.sqrt();
+        let per_final: Vec<Vec<(f64, bool, f64, bool)>> = finals
+            .par_iter()
+            .filter_map(|(cid, fl)| {
+                let &jdn = comp_start.get(*cid)?;
+                let wk = week_of(jdn);
+                let mut avgs: Vec<f64> = fl.iter().map(|x| x.1).collect();
+                avgs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                if avgs.get(2).map_or(true, |&a| a >= 800.0) {
+                    return None;
+                }
+                let cands: Vec<(f64, SimParams)> = fl
+                    .iter()
+                    .filter_map(|(p, avg)| {
+                        let idx = *pid2idx.get(p)?;
+                        let e = look4(&kal[idx], wk)?;
+                        let mut sp = SimParams::new(e.1, e.2, e.3, dnf_rate[idx]);
+                        sp.lvl_sd *= lvl_scale;
+                        sp.sd *= sd_scale;
+                        Some((*avg, sp))
+                    })
+                    .collect();
+                let m = cands.len();
+                if m < 4 {
+                    return None;
+                }
+                let mut order: Vec<usize> = (0..m).collect();
+                order.sort_unstable_by(|&a, &b| cands[a].0.partial_cmp(&cands[b].0).unwrap());
+                let actual_win = order[0];
+                let actual_pod: std::collections::HashSet<usize> =
+                    order.iter().take(3).copied().collect();
+
+                let mut wins = vec![0u32; m];
+                let mut pods = vec![0u32; m];
+                let mut rng = Rng((wk as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ cid.len() as u64 ^ 0x55);
+                let mut sample = vec![0.0f64; m];
+                for _ in 0..R_MC {
+                    // Shared per-scramble log offsets (same 5 scrambles for everyone).
+                    let scr: [f64; 5] = if var_scr > 0.0 {
+                        std::array::from_fn(|_| scr_sd * rng.normal())
+                    } else {
+                        [0.0; 5]
+                    };
+                    for (i, c) in cands.iter().enumerate() {
+                        sample[i] = sim_one_ao5(&c.1, &scr, &mut rng);
+                    }
+                    let mut idx: Vec<usize> = (0..m).collect();
+                    idx.sort_unstable_by(|&a, &b| sample[a].partial_cmp(&sample[b]).unwrap());
+                    wins[idx[0]] += 1;
+                    for &k in idx.iter().take(3) {
+                        pods[k] += 1;
+                    }
+                }
+                Some(
+                    (0..m)
+                        .map(|i| {
+                            (
+                                wins[i] as f64 / R_MC as f64,
+                                i == actual_win,
+                                pods[i] as f64 / R_MC as f64,
+                                actual_pod.contains(&i),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+
+        let mut r = Rel {
+            win_pred: [0.0; 10], win_act: [0.0; 10], win_n: [0; 10],
+            pod_pred: [0.0; 10], pod_act: [0.0; 10], pod_n: [0; 10],
+            brier_w: 0.0, brier_p: 0.0, n_pred: 0, n_finals: 0,
+        };
+        for f in &per_final {
+            r.n_finals += 1;
+            for &(pw, won, pp, pod) in f {
+                let bw = ((pw * 10.0) as usize).min(9);
+                r.win_pred[bw] += pw;
+                r.win_act[bw] += won as u32 as f64;
+                r.win_n[bw] += 1;
+                let bp = ((pp * 10.0) as usize).min(9);
+                r.pod_pred[bp] += pp;
+                r.pod_act[bp] += pod as u32 as f64;
+                r.pod_n[bp] += 1;
+                r.brier_w += (pw - won as u32 as f64).powi(2);
+                r.brier_p += (pp - pod as u32 as f64).powi(2);
+                r.n_pred += 1;
+            }
+        }
+        r
+    };
+
+    let scr_var = 0.0009; // shared per-scramble log-variance from the ANOVA probe
+    let variants: &[(&str, f64, f64, f64)] = &[
+        ("baseline       ", 1.0, 1.0, 0.0),
+        ("lvl_sd=0        ", 0.0, 1.0, 0.0),
+        ("sigma x0.85     ", 1.0, 0.85, 0.0),
+        ("+scramble corr  ", 1.0, 1.0, scr_var),
+        ("lvl=0 sig x0.9  ", 0.0, 0.9, 0.0),
+    ];
+    let row = |label: &str, pred: &[f64; 10], act: &[f64; 10], cnt: &[u32; 10]| {
+        let cells: Vec<String> = (0..10)
+            .filter(|&b| cnt[b] > 0)
+            .map(|b| format!("[{:.2}→{:.2} n{}]", pred[b] / cnt[b] as f64, act[b] / cnt[b] as f64, cnt[b]))
+            .collect();
+        eprintln!("        {label} (pred→actual): {}", cells.join(" "));
+    };
+    for &(label, ls, ss, vs) in variants {
+        let r = run_variant(ls, ss, vs);
+        if r.n_pred == 0 {
+            continue;
+        }
+        eprintln!(
+            "    MC competition calibration [{}] (strong finals n={}, finalists n={}, R={R_MC}):  Brier win {:.4} podium {:.4}",
+            label.trim(), r.n_finals, r.n_pred, r.brier_w / r.n_pred as f64, r.brier_p / r.n_pred as f64
+        );
+        row("win   ", &r.win_pred, &r.win_act, &r.win_n);
+        row("podium", &r.pod_pred, &r.pod_act, &r.pod_n);
+    }
+
     // ── PIT calibration on a subsample of 333 ao5 results ──
     // For each result with an official average, locate the causal prediction at
     // its week, Monte-Carlo the predicted ao5, and record the actual's percentile.
@@ -1254,6 +1942,85 @@ fn validate(
             deciles.iter().map(|&c| format!("{:.1}", 100.0 * c as f64 / n as f64)).collect();
         eprintln!("      decile % (ideal ~10 each): [{}]", pct.join(", "));
     }
+    // ── Innovation-variance calibration (model-internal, no outcome data) ──
+    // z = (ybar − one-step predicted level)/√F. Honest variances ⇒ Var(z)=1.
+    // Var(z)<1 ⇒ predictive F inflated by 1/Var(z) (posterior too wide).
+    {
+        let stride = (series.len() / 50_000).max(1);
+        // (z_sum, z2, zn, epi, age_zsum[4], age_z2[4], age_n[4])
+        type Acc = (f64, f64, u64, f64, [f64; 4], [f64; 4], [u64; 4]);
+        let fold = |a: Acc, b: Acc| {
+            let mut zs = a.4; let mut z2 = a.5; let mut n = a.6;
+            for i in 0..4 { zs[i] += b.4[i]; z2[i] += b.5[i]; n[i] += b.6[i]; }
+            (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, zs, z2, n)
+        };
+        let ages = ["<8wk", "8-52", "52-156", ">156"];
+        let report = |label: &str, acc: Acc| {
+            let (zs, z2, zn, epi, azs, az2, an) = acc;
+            if zn == 0 {
+                return;
+            }
+            let nf = zn as f64;
+            let mean = zs / nf;
+            let varz = z2 / nf - mean * mean;
+            eprintln!(
+                "    innovation calibration [{label}] (n={zn}): Var(z) = {:.3} (ideal 1.000)  mean z = {:+.3}  (sd ×{:.2}, epistemic {:.0}% of F)",
+                varz, mean, 1.0 / varz.sqrt(), 100.0 * epi / nf
+            );
+            let cells: Vec<String> = (0..4)
+                .filter(|&i| an[i] > 0)
+                .map(|i| {
+                    let n = an[i] as f64;
+                    let m = azs[i] / n;
+                    format!("{}: z̄={:+.2} Var={:.2} (n{})", ages[i], m, az2[i] / n - m * m, an[i])
+                })
+                .collect();
+            eprintln!("      by career age — {}", cells.join("  "));
+        };
+        let zero: Acc = (0.0, 0.0, 0, 0.0, [0.0; 4], [0.0; 4], [0; 4]);
+        let pull = |s: &PersonSeries| {
+            let sm = run_person(s, h, 1.0, None);
+            (sm.z_sum, sm.z2_sum, sm.z_n, sm.epi_frac_sum, sm.age_zsum, sm.age_z2, sm.age_n)
+        };
+        let acc_all: Acc = series.par_iter().step_by(stride).map(pull).reduce(|| zero, fold);
+        report("all   ", acc_all);
+        // Fast solvers only (best week sub-8), where prediction accuracy matters most.
+        let acc_fast: Acc = series
+            .par_iter()
+            .step_by(stride)
+            .filter(|s| s.weeks.iter().map(|w| w.ybar).fold(f64::INFINITY, f64::min) < 800.0_f64.ln())
+            .map(pull)
+            .reduce(|| zero, fold);
+        report("sub-8 ", acc_fast);
+
+        // Sweep φ and q_eta: which knob drives improve-phase z̄→0 and veteran Var(z)→1?
+        let base = *h;
+        let phis = [base.phi, 0.92, 0.96, 0.99];
+        let qscales = [0.5, 1.0, 2.0];
+        eprintln!("    hyperparameter sweep (improve = 8–156wk, vet = >156wk):");
+        for &phi in &phis {
+            for &qs in &qscales {
+                let mut h2 = base;
+                h2.phi = phi;
+                h2.q_eta = base.q_eta * qs;
+                let (_, _, _, _, azs, az2, an): Acc =
+                    series.par_iter().step_by(stride).map(|s| {
+                        let sm = run_person(s, &h2, 1.0, None);
+                        (sm.z_sum, sm.z2_sum, sm.z_n, sm.epi_frac_sum, sm.age_zsum, sm.age_z2, sm.age_n)
+                    }).reduce(|| zero, fold);
+                let imp_n = (an[1] + an[2]).max(1) as f64;
+                let imp_z = (azs[1] + azs[2]) / imp_n;
+                let vn = an[3].max(1) as f64;
+                let vz = azs[3] / vn;
+                let vvar = az2[3] / vn - vz * vz;
+                eprintln!(
+                    "      φ={:.2} q_eta×{:.1}: improve z̄={:+.2} | vet z̄={:+.2} Var(z)={:.2}",
+                    phi, qs, imp_z, vz, vvar
+                );
+            }
+        }
+    }
+
     let _ = (wr_single, wr_ao5);
 }
 
@@ -1292,18 +2059,56 @@ fn build_luck(
     let pid2idx: HashMap<&str, usize> =
         series.iter().enumerate().map(|(i, s)| (s.pid.as_str(), i)).collect();
 
-    // Std of a WCA ao5 (trimmed mean of 5) relative to a single-solve sd.
-    let ao5_factor = {
+    // Standardized WCA ao5 statistic under the fitted skew shape (sinh-arcsinh):
+    // q = ln(trimmed-mean of 5 skewed solves) / sd, in single-solve-sd units,
+    // level = 0. Tabulated once; its empirical CDF gives P(a round's ao5 ≤ target)
+    // including the averaging variance reduction, the trim, the skew, and the fat
+    // right tail — replacing the Gaussian Φ. Built at the fast-solver shape and a
+    // representative sd (records come from fast solvers; the standardized statistic
+    // is ~sd-invariant to first order).
+    // Family of standardized ao5 tables, one per tail-weight delta, so each
+    // person's tail shape is matched to their skill (faster ⇒ lighter tails).
+    // delta grid spans the fitted range; index = round((delta-D0)/DSTEP).
+    const D0: f64 = 0.70;
+    const DSTEP: f64 = 0.02;
+    const NDELTA: usize = 8; // 0.70 .. 0.84
+    let build_table = |delta: f64| -> Vec<f32> {
+        let eps = SAS_EPS;
+        let sd0 = 0.15;
+        let (sm, sv) = sas_consts(eps, delta);
+        let scale = 1.0 / sv.sqrt();
         let mut rng = Rng(12345);
-        let (mut sum, mut sumsq, n) = (0.0, 0.0, 200_000u64);
-        for _ in 0..n {
-            let mut v: [f64; 5] = std::array::from_fn(|_| rng.normal());
+        let mut q: Vec<f32> = Vec::with_capacity(2_000_000);
+        for _ in 0..2_000_000 {
+            let mut v: [f64; 5] = std::array::from_fn(|_| {
+                let w = (sas(rng.normal(), eps, delta) - sm) * scale; // mean 0, var 1
+                (sd0 * w).exp() // linear time, baseline 1.0
+            });
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let a = (v[1] + v[2] + v[3]) / 3.0;
-            sum += a;
-            sumsq += a * a;
+            q.push((a.ln() / sd0) as f32);
         }
-        (sumsq / n as f64 - (sum / n as f64).powi(2)).sqrt()
+        q.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        q
+    };
+    let ao5_tables: Vec<Vec<f32>> =
+        (0..NDELTA).into_par_iter().map(|i| build_table(D0 + i as f64 * DSTEP)).collect();
+    // Per-level table selection from the skill level (log centiseconds).
+    let table_for = |level: f64| -> &Vec<f32> {
+        let i = (((sas_delta(level) - D0) / DSTEP).round() as i64).clamp(0, NDELTA as i64 - 1);
+        &ao5_tables[i as usize]
+    };
+    // P(standardized ao5 ≤ x) under the level-matched table.
+    let ao5_cdf = |level: f64, x: f64| -> f64 {
+        let t = table_for(level);
+        t.partition_point(|&q| (q as f64) < x) as f64 / t.len() as f64
+    };
+    // Std of the standardized ao5 (for the σ-below display) at the fast-solver shape.
+    let ao5_factor = {
+        let t = table_for((600.0_f64).ln());
+        let n = t.len() as f64;
+        let m = t.iter().map(|&x| x as f64).sum::<f64>() / n;
+        (t.iter().map(|&x| (x as f64 - m).powi(2)).sum::<f64>() / n).sqrt()
     };
 
     // Best official ao5 per person (the ao5 ranking), with the comp it was set at.
@@ -1354,7 +2159,9 @@ fn build_luck(
         if let Some(weeks) = rounds_by_person.get(s.pid.as_str()) {
             for &(wk, nr) in weeks {
                 let level = *level_at.get(&wk).unwrap_or(&loo_level);
-                let p = normal_cdf((record.ln() - level) / sigma_ao5).min(1.0 - 1e-12);
+                // Argument in single-solve-sd units; the level-matched table
+                // encodes the ao5 variance reduction + skew, so divide by sd.
+                let p = ao5_cdf(level, (record.ln() - level) / sd).min(1.0 - 1e-12);
                 log_surv += nr as f64 * (1.0 - p).ln();
             }
         }
@@ -1376,14 +2183,15 @@ fn build_luck(
                 Some((idx, avg, wk))
             })
             .collect();
-        let lucks: Vec<f64> = elig
+        // Keep (record ao5, luck) so calibration can be split by speed bin.
+        let lucks: Vec<(f64, f64)> = elig
             .par_iter()
-            .filter_map(|&(idx, avg, wk)| career_luck(idx, avg, wk).map(|r| r.0))
+            .filter_map(|&(idx, avg, wk)| career_luck(idx, avg, wk).map(|r| (avg, r.0)))
             .collect();
         if !lucks.is_empty() {
-            let mean = lucks.iter().sum::<f64>() / lucks.len() as f64;
+            let mean = lucks.iter().map(|&(_, l)| l).sum::<f64>() / lucks.len() as f64;
             let mut dec = [0u32; 10];
-            for &l in &lucks {
+            for &(_, l) in &lucks {
                 dec[((l * 10.0) as usize).min(9)] += 1;
             }
             let pct: Vec<String> =
@@ -1393,6 +2201,29 @@ fn build_luck(
                 lucks.len(), mean
             );
             eprintln!("      decile % (ideal ~10 each): [{}]", pct.join(", "));
+            // Per-speed-bin mean (ideal 0.500 in every bin).
+            let bins: &[(&str, f64, f64)] = &[
+                ("sub-8 ", 0.0, 800.0),
+                ("8-12s ", 800.0, 1200.0),
+                ("12-20s", 1200.0, 2000.0),
+                ("20s+  ", 2000.0, f64::INFINITY),
+            ];
+            for &(lbl, lo, hi) in bins {
+                let v: Vec<f64> =
+                    lucks.iter().filter(|&&(a, _)| a >= lo && a < hi).map(|&(_, l)| l).collect();
+                if v.len() >= 2 {
+                    let nb = v.len() as f64;
+                    let mb = v.iter().sum::<f64>() / nb;
+                    let var = v.iter().map(|&l| (l - mb).powi(2)).sum::<f64>() / (nb - 1.0);
+                    let se = (var / nb).sqrt();
+                    let z = (mb - 0.5) / se;
+                    let p = 2.0 * (1.0 - normal_cdf(z.abs())); // H0: mean = 0.500
+                    eprintln!(
+                        "      bin {lbl}: n={:>6}  mean = {:.3}  (z={:+.1}, p={:.1e} vs 0.500)",
+                        v.len(), mb, z, p
+                    );
+                }
+            }
         }
     }
 
@@ -1449,6 +2280,5 @@ fn build_luck(
         })
         .collect();
 
-    let _ = ao5_factor;
     entries
 }

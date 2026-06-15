@@ -8,10 +8,32 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let data_dir = args.next().unwrap_or_else(|| "data".to_string());
     let out_dir = args.next().unwrap_or_else(|| "out".to_string());
+    let mode = args.next();
 
     let t0 = std::time::Instant::now();
     let db = WcaDb::load(&data_dir)?;
     eprintln!("Load: {:.2?}", t0.elapsed());
+
+    if mode.as_deref() == Some("solve-dist") {
+        stats::solve_dist::run(&db)?;
+        return Ok(());
+    }
+    if mode.as_deref() == Some("scramble-corr") {
+        stats::solve_dist::scramble_corr(&db)?;
+        return Ok(());
+    }
+    if mode.as_deref() == Some("improve-signal") {
+        stats::solve_dist::improve_signal(&db)?;
+        return Ok(());
+    }
+    if mode.as_deref() == Some("improve-curve") {
+        stats::solve_dist::improve_curve(&db)?;
+        return Ok(());
+    }
+    if mode.as_deref() == Some("floor-fit") {
+        stats::solve_dist::floor_fit(&db)?;
+        return Ok(());
+    }
 
     eprintln!();
     eprintln!("Database summary:");

@@ -10,6 +10,7 @@ mod ranking_countries;
 mod ranks_export;
 mod relay;
 mod skill_estimator;
+pub mod solve_dist;
 mod sub_x;
 mod two_man;
 mod wr_half_life;
