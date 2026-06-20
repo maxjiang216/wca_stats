@@ -10,6 +10,8 @@ interface WrEntry {
   value: number;
   date: string;
   comp: string;
+  top2_days: number;
+  top2_current: boolean;
   top10_days: number;
   top10_current: boolean;
   top100_days: number;
@@ -61,6 +63,7 @@ export default function WrLongevityTable() {
     if (evs.length > 0 && !newTable[event]) setEvent(evs[0]);
   };
 
+  const maxTop2 = Math.max(...rows.map((r) => r.top2_days));
   const maxTop10 = Math.max(...rows.map((r) => r.top10_days));
   const maxTop100 = Math.max(...rows.map((r) => r.top100_days));
 
@@ -95,6 +98,7 @@ export default function WrLongevityTable() {
             <th>Person</th>
             <th style={{ width: 80 }}>Result</th>
             <th style={{ width: 96 }}>Date</th>
+            <th style={{ width: 140 }}>Days in top 2</th>
             <th style={{ width: 140 }}>Days in top 10</th>
             <th style={{ width: 140 }}>Days in top 100</th>
           </tr>
@@ -114,6 +118,13 @@ export default function WrLongevityTable() {
               </td>
               <td className="value-col">{formatValue(r.value, event)}</td>
               <td className="muted">{r.date}</td>
+              <td>
+                <DurationBar
+                  days={r.top2_days}
+                  current={r.top2_current}
+                  max={maxTop2}
+                />
+              </td>
               <td>
                 <DurationBar
                   days={r.top10_days}
