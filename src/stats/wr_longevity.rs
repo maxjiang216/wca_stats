@@ -35,6 +35,11 @@ pub struct WrEntry {
     pub value: i32,
     pub date: String,
     pub comp: String,
+    /// Days this result was better than the world's 2nd-best PB — i.e. the only
+    /// thing keeping it WR was the holder beating their own mark, nobody else
+    /// having come within reach.
+    pub top2_days: i32,
+    pub top2_current: bool,
     /// Days this result was in the top-k (up to today if still there).
     pub top10_days: i32,
     /// True if still in top 10 as of the latest competition in the database.
@@ -186,10 +191,13 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     let compute = |all: &[(i32, String, i32)],
                    wrs: &[(i32, i32, String, String, String)]|
      -> Vec<WrEntry> {
+        let tl2 = kth_best_timeline(all, 2);
         let tl10 = kth_best_timeline(all, 10);
         let tl100 = kth_best_timeline(all, 100);
         wrs.iter()
             .map(|(wr_jdn, wr_value, name, pid, comp)| {
+                let (top2_days, top2_current) =
+                    find_days(&tl2, *wr_jdn, *wr_value, today_jdn);
                 let (top10_days, top10_current) =
                     find_days(&tl10, *wr_jdn, *wr_value, today_jdn);
                 let (top100_days, top100_current) =
@@ -200,6 +208,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                     value: *wr_value,
                     date: jdn_to_iso(*wr_jdn),
                     comp: comp.clone(),
+                    top2_days,
+                    top2_current,
                     top10_days,
                     top10_current,
                     top100_days,
