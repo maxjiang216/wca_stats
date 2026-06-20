@@ -10,14 +10,21 @@ const CHARTS = [
   { href: '/sub-x', label: 'Sub-X Rankings' },
   { href: '/wr-half-life', label: 'WR Half-Life' },
   { href: '/wr-longevity', label: 'WR Longevity' },
+  { href: '/wr-cross-rank', label: 'WR Cross-Rank' },
   { href: '/china', label: 'China vs USA by event' },
   { href: '/first-records', label: 'First CR/WR by Country' },
+];
+
+const MBLD_EXTRA = [
+  { href: '/mbld-rankings', label: 'MBLD N-Point Rankings' },
 ];
 
 const ALL_ROUND = [
   { href: '/sum-of-ranks', label: 'Sum of Ranks' },
   { href: '/kinch-ranks', label: 'KinchRanks' },
   { href: '/skill-estimator', label: 'Skill Estimator' },
+  { href: '/kalman-skill', label: 'Kalman Skill' },
+  { href: '/luck', label: 'Luckiest Averages' },
 ];
 
 export default function Sidebar() {
@@ -78,6 +85,17 @@ export default function Sidebar() {
           className={pathname === `/stats/${s.id}` ? 'active' : ''}
         >
           {s.title}
+        </Link>
+      ))}
+
+      <h2>Multi-Blind</h2>
+      {MBLD_EXTRA.map((c) => (
+        <Link
+          key={c.href}
+          href={c.href}
+          className={pathname === c.href ? 'active' : ''}
+        >
+          {c.label}
         </Link>
       ))}
 

@@ -1,0 +1,60 @@
+name: Weekly data refresh
+
+# Pulls the latest WCA export, regenerates all stats JSON, publishes it as a
+# GitHub Release asset (data-latest), and pings Vercel to redeploy. The web app
+# downloads this asset at build time via web/scripts/fetch-data.mjs.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC (WCA export refreshes earlier)
+  workflow_dispatch: {} # allow manual runs
+
+permissions:
+  contents: write # create/update the release
+
+concurrency:
+  group: weekly-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install requests
+
+      - name: Download WCA export
+        run: python utils/export_database.py data
+
+      - name: Generate stats JSON
+        run: cargo run --release -- data out
+
+      - name: Package JSON
+        run: cd out && zip -r ../wca_stats_data.zip *.json
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create data-latest \
+            --title "Latest stats data" \
+            --notes "Auto-generated weekly. Asset is overwritten each run." \
+            2>/dev/null || true
+          gh release upload data-latest wca_stats_data.zip --clobber
+
+      - name: Trigger Vercel deploy
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -n "$HOOK" ]; then
+            curl -fsS -X POST "$HOOK" && echo "Vercel deploy triggered"
+          else
+            echo "VERCEL_DEPLOY_HOOK not set — skipping redeploy"
+          fi
