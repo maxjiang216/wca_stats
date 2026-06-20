@@ -10,6 +10,7 @@ const CHARTS = [
   { href: '/sub-x', label: 'Sub-X Rankings' },
   { href: '/wr-half-life', label: 'WR Half-Life' },
   { href: '/wr-longevity', label: 'WR Longevity' },
+  { href: '/wr-cross-rank', label: 'WR Cross-Rank' },
   { href: '/china', label: 'China vs USA by event' },
   { href: '/first-records', label: 'First CR/WR by Country' },
 ];

@@ -13,6 +13,7 @@ mod skill_estimator;
 pub mod solve_dist;
 mod sub_x;
 mod two_man;
+mod wr_cross_rank;
 mod wr_half_life;
 mod wr_longevity;
 
@@ -45,5 +46,7 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     first_records::write(db, out_dir)?;
     eprintln!("wr_longevity");
     wr_longevity::write(db, out_dir)?;
+    eprintln!("wr_cross_rank");
+    wr_cross_rank::write(db, out_dir)?;
     Ok(())
 }
