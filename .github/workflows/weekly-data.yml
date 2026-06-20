@@ -6,7 +6,12 @@ name: Weekly data refresh
 
 on:
   schedule:
-    - cron: '0 6 * * 1' # Mondays 06:00 UTC (WCA export refreshes earlier)
+    # Wednesdays 06:00 UTC. The stats group solves into weeks on a Tuesday
+    # boundary (kalman_skill picks the weekday straddled by the fewest comps —
+    # Tue), so a week closes Mon night. Publishing Wed gives the just-closed
+    # week + a day for weekend comp results to be submitted and land in the
+    # daily WCA export (regenerated ~00:00 UTC).
+    - cron: '0 6 * * 3'
   workflow_dispatch: {} # allow manual runs
 
 permissions:
