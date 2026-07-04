@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crate::db::WcaDb;
 
+mod dominance;
 mod first_records;
 mod kalman_skill;
 mod mbld;
@@ -48,5 +49,7 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     wr_longevity::write(db, out_dir)?;
     eprintln!("wr_cross_rank");
     wr_cross_rank::write(db, out_dir)?;
+    eprintln!("dominance");
+    dominance::write(db, out_dir)?;
     Ok(())
 }

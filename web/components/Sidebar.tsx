@@ -12,6 +12,7 @@ const CHARTS = [
   { href: '/wr-longevity', label: 'WR Longevity' },
   { href: '/wr-cross-rank', label: 'WR Cross-Rank' },
   { href: '/wr-compare', label: 'WR Compare: 3×3 vs SQ1' },
+  { href: '/dominance', label: 'Top-Result Dominance' },
   { href: '/china', label: 'China vs USA by event' },
   { href: '/first-records', label: 'First CR/WR by Country' },
 ];
