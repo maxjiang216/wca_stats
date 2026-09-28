@@ -139,7 +139,8 @@ export default function TeamTable({ size }: { size: number }) {
       <div className="muted" style={{ marginBottom: 12, fontSize: 12 }}>
         Events: {ch.events.map((e) => SHORT[e] ?? e).join(' · ')}
         {' · '}
-        Team time = the slowest member&apos;s total.
+        Team time = the slowest member&apos;s total; ties go to the faster 2nd-slowest
+        member, then 3rd, and so on.
       </div>
 
       <h2 style={{ marginTop: 24, marginBottom: 8 }}>Global Best</h2>
