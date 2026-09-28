@@ -14,8 +14,8 @@ mod relay;
 mod skill_estimator;
 pub mod solve_dist;
 mod sub_x;
+mod n_man;
 mod team_common;
-mod three_man;
 mod two_man;
 mod wr_cross_rank;
 mod wr_half_life;
@@ -29,45 +29,9 @@ pub fn diag_enabled() -> bool {
 }
 
 pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
-    if std::env::var("ONLY_THREE_MAN").is_ok() {
-        eprintln!("two_man");
+    if std::env::var("ONLY_TEAMS").is_ok() {
         two_man::write(db, out_dir)?;
-        eprintln!("three_man");
-        three_man::write(db, out_dir)?;
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_MINI_2").is_ok() {
-        three_man::debug_pool_size(db, true, 2);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_GUILD_2").is_ok() {
-        three_man::debug_pool_size(db, false, 2);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_MINI_3").is_ok() {
-        three_man::debug_pool_size(db, true, 3);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_GUILD_3").is_ok() {
-        three_man::debug_pool_size(db, false, 3);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_MINI_4").is_ok() {
-        three_man::debug_pool_size(db, true, 4);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_POOL_GUILD_4").is_ok() {
-        three_man::debug_pool_size(db, false, 4);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_FOUR_MAN_MINI").is_ok() {
-        // Seeded from the already-known 3-man mini-Guildford optimum (3782cs).
-        three_man::debug_four_man(db, true, None, 3782);
-        return Ok(());
-    }
-    if std::env::var("DEBUG_FOUR_MAN_GUILD").is_ok() {
-        // Seeded from the already-known 3-man Guildford optimum (10065cs).
-        three_man::debug_four_man(db, false, None, 10065);
+        n_man::write(db, out_dir)?;
         return Ok(());
     }
     if std::env::var("ONLY_MEMO_BITS").is_ok() {
@@ -94,7 +58,7 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     stage!("ranks_export", ranks_export::write(db, out_dir));
     stage!("nations_cup", nations_cup::write(db, out_dir));
     stage!("two_man", two_man::write(db, out_dir));
-    stage!("three_man", three_man::write(db, out_dir));
+    stage!("n_man", n_man::write(db, out_dir));
     stage!("sub_x", sub_x::write(db, out_dir));
     stage!("wr_half_life", wr_half_life::write(db, out_dir));
     stage!("skill_estimator", skill_estimator::write(db, out_dir));

@@ -6,6 +6,8 @@ import { STATS } from '@/lib/stats';
 
 const CHARTS = [
   { href: '/two-man', label: '2-Man Guildford' },
+  { href: '/three-man', label: '3-Man Guildford' },
+  { href: '/four-man', label: '4-Man Guildford' },
   { href: '/nations-cup', label: 'Nations Cup Dream Team' },
   { href: '/sub-x', label: 'Sub-X Rankings' },
   { href: '/wr-half-life', label: 'WR Half-Life' },
