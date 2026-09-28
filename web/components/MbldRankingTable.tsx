@@ -9,8 +9,6 @@ import {
 } from '@/lib/stats';
 import { formatMbldTime, formatMbldMean } from '@/lib/format';
 
-type Limit = 100 | 1000;
-
 type Props = {
   statId: string;
 };
@@ -22,7 +20,6 @@ export default function MbldRankingTable({ statId }: Props) {
   const [meanData, setMeanData] = useState<MbldMeanData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
-  const [limit, setLimit] = useState<Limit>(100);
 
   useEffect(() => {
     setSingleData(null);
@@ -57,26 +54,9 @@ export default function MbldRankingTable({ statId }: Props) {
   const active = eventId ?? events[0];
 
   if (isMean) {
-    const rows = ((meanData![active] ?? []) as import('@/lib/stats').MbldMeanEntry[]).filter(
-      (r) => r.rank <= limit,
-    );
-    const all = (meanData![active] ?? []) as import('@/lib/stats').MbldMeanEntry[];
+    const rows = (meanData![active] ?? []) as import('@/lib/stats').MbldMeanEntry[];
     return (
       <>
-        <div className="toolbar">
-          <div className="toggle-group">
-            <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>
-              Top 100
-            </button>
-            <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>
-              Top 1000
-            </button>
-          </div>
-          <span className="muted">
-            {rows.length.toLocaleString()} of {all.length.toLocaleString()} shown
-          </span>
-        </div>
-
         <div className="tabs">
           {events.map((e) => (
             <button
@@ -134,25 +114,10 @@ export default function MbldRankingTable({ statId }: Props) {
   }
 
   // single attempt stats (mbld_perfect, mbld_solved)
-  const allSingle = (singleData![active] ?? []) as import('@/lib/stats').MbldSingleEntry[];
-  const rowsSingle = allSingle.filter((r) => r.rank <= limit);
+  const rowsSingle = (singleData![active] ?? []) as import('@/lib/stats').MbldSingleEntry[];
 
   return (
     <>
-      <div className="toolbar">
-        <div className="toggle-group">
-          <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>
-            Top 100
-          </button>
-          <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>
-            Top 1000
-          </button>
-        </div>
-        <span className="muted">
-          {rowsSingle.length.toLocaleString()} of {allSingle.length.toLocaleString()} shown
-        </span>
-      </div>
-
       <div className="tabs">
         {events.map((e) => (
           <button

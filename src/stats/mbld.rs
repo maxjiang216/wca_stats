@@ -71,12 +71,12 @@ pub struct MeanEntry {
     pub time_total_s: u32,
 }
 
-/// First index ≥ 1000 where the value changes, or rows_len if no such index.
-fn cutoff_at_1000(rows_len: usize, is_same_rank: impl Fn(usize) -> bool) -> usize {
-    if rows_len <= 1000 {
+/// First index ≥ 100 where the value changes, or rows_len if no such index.
+fn cutoff_at_100(rows_len: usize, is_same_rank: impl Fn(usize) -> bool) -> usize {
+    if rows_len <= 100 {
         return rows_len;
     }
-    let mut i = 1000;
+    let mut i = 100;
     while i < rows_len && is_same_rank(i) {
         i += 1;
     }
@@ -166,7 +166,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                     .then_with(|| end_date(db, a.1).cmp(&end_date(db, b.1)))
                     .then_with(|| a.1.person_id.cmp(&b.1.person_id))
             });
-            let n = cutoff_at_1000(rows.len(), |i| rows[i].0 == rows[i - 1].0);
+            let n = cutoff_at_100(rows.len(), |i| rows[i].0 == rows[i - 1].0);
             let rows = &rows[..n];
             let mut entries = Vec::with_capacity(rows.len());
             let mut rank = 1;
@@ -208,7 +208,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                     .then_with(|| end_date(db, a.3).cmp(&end_date(db, b.3)))
                     .then_with(|| a.3.person_id.cmp(&b.3.person_id))
             });
-            let n = cutoff_at_1000(rows.len(), |i| {
+            let n = cutoff_at_100(rows.len(), |i| {
                 rows[i].0 == rows[i - 1].0 && rows[i].1 == rows[i - 1].1
             });
             let rows = &rows[..n];
@@ -253,7 +253,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
                     .then_with(|| end_date(db, a.2).cmp(&end_date(db, b.2)))
                     .then_with(|| a.2.person_id.cmp(&b.2.person_id))
             });
-            let n = cutoff_at_1000(rows.len(), |i| {
+            let n = cutoff_at_100(rows.len(), |i| {
                 rows[i].0 == rows[i - 1].0 && rows[i].1 == rows[i - 1].1
             });
             let rows = &rows[..n];
@@ -387,7 +387,7 @@ pub fn write_rankings(db: &WcaDb, out_dir: &str) -> Result<()> {
                         .then_with(|| end_date(db, a.3).cmp(&end_date(db, b.3)))
                         .then_with(|| a.3.person_id.cmp(&b.3.person_id))
                 });
-                let n = cutoff_at_1000(rows.len(), |i| rows[i].0 == rows[i - 1].0);
+                let n = cutoff_at_100(rows.len(), |i| rows[i].0 == rows[i - 1].0);
                 let rows = &rows[..n];
                 let mut entries = Vec::with_capacity(rows.len());
                 let mut rank = 1usize;
@@ -437,7 +437,7 @@ pub fn write_rankings(db: &WcaDb, out_dir: &str) -> Result<()> {
                         .then_with(|| end_date(db, a.1).cmp(&end_date(db, b.1)))
                         .then_with(|| a.1.person_id.cmp(&b.1.person_id))
                 });
-                let n = cutoff_at_1000(rows.len(), |i| rows[i].0 == rows[i - 1].0);
+                let n = cutoff_at_100(rows.len(), |i| rows[i].0 == rows[i - 1].0);
                 let rows = &rows[..n];
                 let mut entries = Vec::with_capacity(rows.len());
                 let mut rank = 1usize;

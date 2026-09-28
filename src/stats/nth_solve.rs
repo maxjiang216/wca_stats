@@ -75,6 +75,13 @@ fn build_rankings<'a>(
 
     for (event_id, person_map) in slot {
         let mut rows: Vec<(i32, &RawResult)> = person_map.into_values().collect();
+        // The cutoff below keeps exactly the rows whose value is <= the 100th
+        // smallest value (ties included), so select that value in O(n) and only
+        // fully sort the survivors instead of every row.
+        if rows.len() > 100 {
+            let (_, &mut (v100, _), _) = rows.select_nth_unstable_by_key(99, |r| r.0);
+            rows.retain(|r| r.0 <= v100);
+        }
         rows.sort_unstable_by(|(a, ra), (b, rb)| {
             let end_date = |r: &RawResult| {
                 db.competitions
@@ -87,11 +94,11 @@ fn build_rankings<'a>(
                 .then_with(|| ra.person_id.cmp(&rb.person_id))
         });
 
-        // Include up to rank 1000, preserving ties at the boundary.
+        // Include up to rank 100, preserving ties at the boundary.
         let cutoff = rows
             .iter()
             .enumerate()
-            .find(|(i, _)| *i >= 1000 && rows[*i].0 != rows[i - 1].0)
+            .find(|(i, _)| *i >= 100 && rows[*i].0 != rows[i - 1].0)
             .map(|(i, _)| i)
             .unwrap_or(rows.len());
         let rows = &rows[..cutoff];

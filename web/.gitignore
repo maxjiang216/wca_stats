@@ -5,3 +5,4 @@ next-env.d.ts
 
 # Generated/downloaded stats data (fetched at build via scripts/fetch-data.mjs)
 /public/data
+.vercel

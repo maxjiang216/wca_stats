@@ -4,8 +4,6 @@ import { useEffect, useState } from 'react';
 import { type StatData, sortEvents, EVENT_NAMES } from '@/lib/stats';
 import { formatValue, formatSingle, formatAverage } from '@/lib/format';
 
-type Limit = 100 | 1000;
-
 type Props = {
   statId: string;
 };
@@ -14,7 +12,6 @@ export default function RankingTable({ statId }: Props) {
   const [data, setData] = useState<StatData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
-  const [limit, setLimit] = useState<Limit>(100);
 
   useEffect(() => {
     setData(null);
@@ -40,30 +37,10 @@ export default function RankingTable({ statId }: Props) {
   if (events.length === 0) return <div className="empty">No data.</div>;
 
   const active = eventId ?? events[0];
-  const rows = (data[active] ?? []).filter((r) => r.rank <= limit);
+  const rows = data[active] ?? [];
 
   return (
     <>
-      <div className="toolbar">
-        <div className="toggle-group">
-          <button
-            className={limit === 100 ? 'active' : ''}
-            onClick={() => setLimit(100)}
-          >
-            Top 100
-          </button>
-          <button
-            className={limit === 1000 ? 'active' : ''}
-            onClick={() => setLimit(1000)}
-          >
-            Top 1000
-          </button>
-        </div>
-        <span className="muted">
-          {rows.length.toLocaleString()} of {(data[active] ?? []).length.toLocaleString()} shown
-        </span>
-      </div>
-
       <div className="tabs">
         {events.map((e) => (
           <button

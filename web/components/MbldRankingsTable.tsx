@@ -22,8 +22,6 @@ interface Data {
 }
 
 type Tab = 'points' | 'perfect';
-type Limit = 100 | 1000;
-
 const EVENTS = ['333mbf', '333mbo'];
 const EVENT_LABELS: Record<string, string> = {
   '333mbf': '3x3 Multi-Blind',
@@ -35,7 +33,6 @@ export default function MbldRankingsTable() {
   const [tab, setTab] = useState<Tab>('points');
   const [event, setEvent] = useState('333mbf');
   const [n, setN] = useState<number | null>(null);
-  const [limit, setLimit] = useState<Limit>(100);
 
   useEffect(() => {
     fetch('/data/mbld_rankings.json')
@@ -61,9 +58,6 @@ export default function MbldRankingsTable() {
 
   const table = tab === 'points' ? data.by_points : data.by_perfect;
   const rows: Entry[] = activeN !== null
-    ? (table[event]?.[String(activeN)] ?? []).filter((r) => r.rank <= limit)
-    : [];
-  const totalRows: Entry[] = activeN !== null
     ? (table[event]?.[String(activeN)] ?? [])
     : [];
 
@@ -126,19 +120,6 @@ export default function MbldRankingsTable() {
             ))}
           </select>
         </label>
-
-        <div className="toggle-group">
-          <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>
-            Top 100
-          </button>
-          <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>
-            Top 1000
-          </button>
-        </div>
-
-        <span className="muted">
-          {rows.length.toLocaleString()} of {totalRows.length.toLocaleString()} shown
-        </span>
       </div>
 
       <table>

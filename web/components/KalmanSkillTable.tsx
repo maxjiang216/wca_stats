@@ -35,14 +35,12 @@ type EventSkill = {
 
 type KalmanData = Record<string, EventSkill>;
 
-const LIMITS = [100, 1000] as const;
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 export default function KalmanSkillTable() {
   const [data, setData] = useState<KalmanData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [event, setEvent] = useState<string>('333');
-  const [limit, setLimit] = useState<100 | 1000>(100);
 
   useEffect(() => {
     fetch('/data/kalman_skill.json')
@@ -60,7 +58,7 @@ export default function KalmanSkillTable() {
   const events = sortEvents(Object.keys(data));
   const ev = data[event];
   if (!ev) return null;
-  const rows = ev.rankings.slice(0, limit);
+  const rows = ev.rankings;
   const trendHalfLife = Math.round(Math.LN2 / Math.max(1 - ev.phi, 1e-6));
 
   return (
@@ -69,7 +67,7 @@ export default function KalmanSkillTable() {
         {events.map((e) => (
           <button
             key={e}
-            onClick={() => { setEvent(e); setLimit(100); }}
+            onClick={() => setEvent(e)}
             className={e === event ? 'active' : ''}
           >
             {EVENT_NAMES[e] ?? e}
@@ -128,15 +126,6 @@ export default function KalmanSkillTable() {
         </tbody>
       </table>
 
-      {ev.rankings.length > limit && (
-        <div style={{ marginTop: '12px' }}>
-          {LIMITS.filter((l) => l !== limit && l <= ev.rankings.length).map((l) => (
-            <button key={l} onClick={() => setLimit(l)}>
-              Show top {l}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

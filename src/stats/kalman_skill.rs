@@ -26,12 +26,12 @@ use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::db::WcaDb;
+use crate::db::{models::RawResult, WcaDb};
 
 /// Speed events covered (all except blindfolded, FMC, feet, and clock).
 const EVENTS: &[&str] =
     &["222", "333", "444", "555", "666", "777", "333oh", "pyram", "skewb", "sq1", "minx"];
-const TOP_N: usize = 1000;
+const TOP_N: usize = 100;
 const N_TRACKS: usize = 200;
 const MC_SAMPLES: usize = 20_000;
 const NU: f64 = 5.0; // Student-t dof for robust observation noise.
@@ -189,13 +189,31 @@ fn trigamma(mut x: f64) -> f64 {
 
 /// Bias-correction constant so that `ln(s²) - C_n` is an unbiased estimate of
 /// `ln(σ²)` for a sample of `n` normal draws (Harvey log-variance trick).
-fn log_var_correction(n: usize) -> f64 {
+fn log_var_correction_raw(n: usize) -> f64 {
     let k = (n - 1) as f64;
     std::f64::consts::LN_2 + digamma(k / 2.0) - k.ln()
 }
 /// Measurement-error variance of that estimator (known a priori from `n`).
-fn log_var_noise(n: usize) -> f64 {
+fn log_var_noise_raw(n: usize) -> f64 {
     trigamma((n - 1) as f64 / 2.0)
+}
+
+// Both only depend on n (solves in a week) and sit in the filter's inner loop,
+// so they're tabulated once; values are identical to calling the raw fns.
+const LV_TABLE_N: usize = 256;
+fn lv_table() -> &'static [(f64, f64)] {
+    static T: std::sync::OnceLock<Vec<(f64, f64)>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        (0..LV_TABLE_N)
+            .map(|n| if n >= 2 { (log_var_correction_raw(n), log_var_noise_raw(n)) } else { (f64::NAN, f64::NAN) })
+            .collect()
+    })
+}
+fn log_var_correction(n: usize) -> f64 {
+    if n < LV_TABLE_N { lv_table()[n].0 } else { log_var_correction_raw(n) }
+}
+fn log_var_noise(n: usize) -> f64 {
+    if n < LV_TABLE_N { lv_table()[n].1 } else { log_var_noise_raw(n) }
 }
 
 // ── tiny deterministic RNG (SplitMix64 + Box–Muller) ────────────────────────
@@ -895,11 +913,69 @@ fn simulate(level: f64, level_var: f64, sigma2: f64, dnf_p: f64, wr_single: i32,
 }
 
 // ── hyperparameter fit ──────────────────────────────────────────────────────
+/// `gap_transition(h, g)` for g in 0..GAP_TABLE_N, built once per candidate `h`.
+const GAP_TABLE_N: usize = 520;
+fn gap_table(h: &Hyper) -> Vec<(M2, M2)> {
+    (0..GAP_TABLE_N).map(|g| gap_transition(h, g as i32)).collect()
+}
+
+/// The one-step predictive log-likelihood `run_person` accumulates, as a
+/// forward pass only: no per-week storage, diagnostics, or RTS smoother. Same
+/// arithmetic in the same order, so the value is identical. The hyperparameter
+/// fit evaluates this dozens of times per series, so skipping the rest matters.
+fn forward_loglik(s: &PersonSeries, h: &Hyper, gaps: &[(M2, M2)]) -> f64 {
+    let mut hb = h.h0;
+    let mut pb = 4.0;
+    let mut x: V2 = [s.weeks[0].ybar, s.weeks[0].ybar];
+    let mut p: M2 = [[0.25, 0.0], [0.0, 0.5]];
+    let mut loglik = 0.0;
+    for t in 0..s.weeks.len() {
+        let w = &s.weeks[t];
+        if t > 0 {
+            let gap = w.wk - s.weeks[t - 1].wk;
+            let (g_eff, q_g) = gaps.get(gap as usize).copied().unwrap_or_else(|| gap_transition(h, gap));
+            x = mat_vec(g_eff, x);
+            p = mat_add(mat_mul(mat_mul(g_eff, p), transpose(g_eff)), q_g);
+            pb += h.q_h.max(h.q_h) * gap.max(1) as f64;
+        }
+        let sigma2 = hb.exp().clamp(h.r_min, h.r_max);
+        let r_t = sigma2 / (w.n as f64);
+        let innov = w.ybar - x[0];
+        let f = p[0][0] + r_t;
+        loglik += -0.5 * (f.ln() + innov * innov / f);
+        let lambda = (NU + 1.0) / (NU + innov * innov / f);
+        let r_eff = r_t / lambda;
+        let f_eff = p[0][0] + r_eff;
+        let k: V2 = [p[0][0] / f_eff, p[1][0] / f_eff];
+        x = [x[0] + k[0] * innov, x[1] + k[1] * innov];
+        let ikz: M2 = [[1.0 - k[0], 0.0], [-k[1], 1.0]];
+        let mut p_new = mat_mul(mat_mul(ikz, p), transpose(ikz));
+        p_new[0][0] += k[0] * k[0] * r_eff;
+        p_new[0][1] += k[0] * k[1] * r_eff;
+        p_new[1][0] += k[1] * k[0] * r_eff;
+        p_new[1][1] += k[1] * k[1] * r_eff;
+        p = p_new;
+        if w.n >= 2 && w.s2 > 0.0 {
+            let yl = w.s2.ln() - log_var_correction(w.n);
+            let rl = log_var_noise(w.n);
+            let s_inn = pb + rl;
+            let kb = pb / s_inn;
+            hb += kb * (yl - hb);
+            pb = (1.0 - kb) * pb;
+            if pb < h.q_h {
+                pb = h.q_h;
+            }
+        }
+    }
+    loglik
+}
+
 /// Speed-weighted pooled one-step log-likelihood over the subsample.
 fn pooled_loglik(sample: &[(&PersonSeries, f64)], h: &Hyper) -> f64 {
+    let gaps = gap_table(h);
     sample
         .par_iter()
-        .map(|(s, w)| run_person(s, h, *w, None).loglik_weighted)
+        .map(|(s, w)| forward_loglik(s, h, &gaps) * *w)
         .sum()
 }
 
@@ -910,6 +986,9 @@ fn fit_hyper(sample: &[(&PersonSeries, f64)], base: Hyper) -> Hyper {
     // and the mean-reversion rate k (phi).
     let factors = [0.5, 0.7, 1.4, 2.0];
     for _pass in 0..3 {
+        // Deterministic ascent: a pass that moves nothing means every later
+        // pass would evaluate the exact same candidates, so stopping is exact.
+        let mut moved = false;
         for which in 0..3 {
             for &f in &factors {
                 let mut cand = h;
@@ -922,8 +1001,12 @@ fn fit_hyper(sample: &[(&PersonSeries, f64)], base: Hyper) -> Hyper {
                 if ll > best {
                     best = ll;
                     h = cand;
+                    moved = true;
                 }
             }
+        }
+        if !moved {
+            break;
         }
     }
     h
@@ -1003,8 +1086,18 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     let mut lucks: std::collections::BTreeMap<String, Vec<LuckEntry>> =
         std::collections::BTreeMap::new();
 
+    // Bucket results by event once (in original order) rather than rescanning
+    // all results for every event.
+    let mut by_event: HashMap<&str, Vec<&RawResult>> = HashMap::new();
+    for r in &db.results {
+        if EVENTS.contains(&r.event_id.as_str()) {
+            by_event.entry(r.event_id.as_str()).or_default().push(r);
+        }
+    }
+
     for &event in EVENTS {
         eprintln!("  kalman_skill: ───── {event} ─────");
+        let event_results: &[&RawResult] = by_event.get(event).map(Vec::as_slice).unwrap_or(&[]);
 
     // ── Step 2: per-person weekly sufficient stats for this event ──
     // (pid, week) -> running log-time stats + dnf/attempt counts.
@@ -1018,10 +1111,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     let mut wr_single = i32::MAX;
     let mut wr_ao5 = i32::MAX;
 
-    for r in &db.results {
-        if r.event_id != event {
-            continue;
-        }
+    for &r in event_results {
         if r.best > 0 && r.best < wr_single {
             wr_single = r.best;
         }
@@ -1148,7 +1238,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     // ── Is per-person specificity warranted? (333) Held-out forward-prediction
     //    test at ~9-month horizon: A=no change, B=global rate-by-level curve,
     //    C=per-person floor projection. Compare by out-of-sample RMSE. ──
-    if event == "333" {
+    // Research diagnostic (stderr only, nothing written to output) — opt-in.
+    if event == "333" && diag_enabled() {
         let k = hyper.phi;
         const H: f64 = 39.0; // horizon weeks (center of [+26,+52])
         const NB: usize = 14;
@@ -1353,14 +1444,14 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         })
         .collect();
 
-    // ── Diagnostics + validation (only for 3x3, to keep the run light) ──
-    if event == "333" {
+    // ── Diagnostics + validation (3x3 research output, stderr only) — opt-in ──
+    if event == "333" && diag_enabled() {
         diagnostics(&series, &hyper);
         validate(db, event, &series, &hyper, &comp_start, boundary as i32, wr_single, wr_ao5);
     }
 
     // ── Luck stat: top-100 ao5 leaderboard with career luck ──
-    let luck = build_luck(db, event, &series, &hyper, &comp_start, boundary as i32, event == "333");
+    let luck = build_luck(event_results, &series, &hyper, &comp_start, boundary as i32, event == "333");
 
     eprintln!("  kalman_skill: {event}: {} ranked, {} tracks, {} luck", rankings.len(), tracks.len(), luck.len());
     outputs.insert(
@@ -2024,6 +2115,13 @@ fn validate(
     let _ = (wr_single, wr_ao5);
 }
 
+/// Research diagnostics (calibration probes, hyperparameter sweeps, held-out
+/// tests) only print to stderr and cost a large share of the runtime, so they
+/// run only when `STATS_DIAG` is set.
+fn diag_enabled() -> bool {
+    crate::stats::diag_enabled()
+}
+
 // ── luck stat ───────────────────────────────────────────────────────────────
 #[derive(Serialize)]
 struct LuckEntry {
@@ -2047,8 +2145,7 @@ struct LuckEntry {
 /// Low probability / negative σ = the average outran their skill (lucky); the
 /// `ao5_rank` vs `skill_rank` gap shows who is propped up by one great result.
 fn build_luck(
-    db: &WcaDb,
-    event: &str,
+    event_results: &[&RawResult],
     series: &[PersonSeries],
     h: &Hyper,
     comp_start: &HashMap<&str, i32>,
@@ -2091,8 +2188,11 @@ fn build_luck(
         q.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         q
     };
-    let ao5_tables: Vec<Vec<f32>> =
-        (0..NDELTA).into_par_iter().map(|i| build_table(D0 + i as f64 * DSTEP)).collect();
+    // Every input to these tables is a constant (shape grid, sd0, seed), so they
+    // are identical for every event — build once per process, not per event.
+    static AO5_TABLES: std::sync::OnceLock<Vec<Vec<f32>>> = std::sync::OnceLock::new();
+    let ao5_tables = AO5_TABLES
+        .get_or_init(|| (0..NDELTA).into_par_iter().map(|i| build_table(D0 + i as f64 * DSTEP)).collect());
     // Per-level table selection from the skill level (log centiseconds).
     let table_for = |level: f64| -> &Vec<f32> {
         let i = (((sas_delta(level) - D0) / DSTEP).round() as i64).clamp(0, NDELTA as i64 - 1);
@@ -2115,8 +2215,8 @@ fn build_luck(
     let mut best: HashMap<&str, (f64, &str)> = HashMap::new();
     // Number of ao5 opportunities (rounds with a valid average) per (person, week).
     let mut rounds: HashMap<(&str, i32), u32> = HashMap::new();
-    for r in &db.results {
-        if r.event_id != event || r.average <= 0 {
+    for &r in event_results {
+        if r.average <= 0 {
             continue;
         }
         let e = best.entry(r.person_id.as_str()).or_insert((f64::INFINITY, ""));
@@ -2170,8 +2270,8 @@ fn build_luck(
         Some((luck, loo_level, sd, sigmas))
     };
 
-    // ── Aggregate calibration: mean career luck should be ≈ 0.5 ──
-    if calibrate {
+    // ── Aggregate calibration: mean career luck should be ≈ 0.5 (stderr only) ──
+    if calibrate && diag_enabled() {
         let elig: Vec<(usize, f64, i32)> = best
             .iter()
             .filter_map(|(&pid, &(avg, comp_id))| {
@@ -2281,4 +2381,34 @@ fn build_luck(
         .collect();
 
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_series(seed: u64) -> PersonSeries {
+        let mut rng = Rng(seed);
+        let mut wk = 100;
+        let mut weeks = Vec::new();
+        for i in 0..60 {
+            wk += 1 + (rng.unit() * 30.0) as i32 + if i == 30 { 700 } else { 0 };
+            let n = match i % 7 { 0 => 1, 3 => 300, _ => 2 + (rng.unit() * 10.0) as usize };
+            let s2 = if i % 11 == 0 { 0.0 } else { 0.01 + rng.unit() * 0.05 };
+            weeks.push(WeekObs { wk, n, ybar: 6.5 - i as f64 * 0.01 + rng.normal() * 0.05, s2 });
+        }
+        PersonSeries { pid: "X".into(), name: "X".into(), country: "X".into(), weeks, dnf: 0, attempts: 0 }
+    }
+
+    #[test]
+    fn forward_loglik_matches_run_person_exactly() {
+        let h = Hyper { q_eta: 0.00015, q_xi: 0.00018, phi: 0.0265, q_h: 0.02, h0: -2.5, r_min: 0.001, r_max: 4.0 };
+        let gaps = gap_table(&h);
+        for seed in 1..20 {
+            let s = synthetic_series(seed);
+            let full = run_person(&s, &h, 1.7, None).loglik_weighted;
+            let fast = forward_loglik(&s, &h, &gaps) * 1.7;
+            assert_eq!(full.to_bits(), fast.to_bits(), "seed {seed}: {full} vs {fast}");
+        }
+    }
 }

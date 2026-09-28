@@ -13,8 +13,13 @@ type PairEntry = {
   events_a: string[];
   events_b: string[];
 };
-type CountryEntry = { country: string; pair: PairEntry };
-type ChallengeData = { events: string[]; pairs: PairEntry[]; countries: CountryEntry[] };
+type RegionEntry = { id: string; name: string; pair: PairEntry };
+type ChallengeData = {
+  events: string[];
+  global: PairEntry | null;
+  continents: RegionEntry[];
+  countries: RegionEntry[];
+};
 type TwoManData = { mini: ChallengeData; guild: ChallengeData };
 
 const SHORT: Record<string, string> = {
@@ -39,82 +44,96 @@ function PersonLink({ p }: { p: PersonRef }) {
   );
 }
 
-function PairRows({ pairs, mode }: { pairs: PairEntry[]; mode: 'global' | 'country' }) {
+function PairCells({ pair }: { pair: PairEntry }) {
   return (
-    <tbody>
-      {pairs.map((p, i) => (
-        <tr key={`${p.a.id}-${p.b.id}`}>
-          <td className="rank-col">{i + 1}</td>
-          {mode === 'country' ? null : (
-            <>
-              <td style={{ minWidth: 160 }}>
-                <PersonLink p={p.a} />
-                <div className="muted" style={{ fontSize: 11 }}>{p.a.country}</div>
-              </td>
-              <td style={{ minWidth: 160 }}>
-                <PersonLink p={p.b} />
-                <div className="muted" style={{ fontSize: 11 }}>{p.b.country}</div>
-              </td>
-            </>
-          )}
-          <td className="muted" style={{ fontSize: 12, minWidth: 140 }}>
-            {fmtEvList(p.events_a)}
-          </td>
-          <td style={{ textAlign: 'right' }}>{formatAverage(p.time_a, '333')}</td>
-          <td className="muted" style={{ fontSize: 12, minWidth: 140 }}>
-            {fmtEvList(p.events_b)}
-          </td>
-          <td style={{ textAlign: 'right' }}>{formatAverage(p.time_b, '333')}</td>
-          <td className="value-col" style={{ textAlign: 'right' }}>
-            {formatAverage(p.time_cs, '333')}
-          </td>
-        </tr>
-      ))}
-    </tbody>
+    <>
+      <td style={{ minWidth: 160 }}>
+        <PersonLink p={pair.a} />
+        <div className="muted" style={{ fontSize: 11 }}>{pair.a.country}</div>
+      </td>
+      <td style={{ minWidth: 160 }}>
+        <PersonLink p={pair.b} />
+        <div className="muted" style={{ fontSize: 11 }}>{pair.b.country}</div>
+      </td>
+      <td className="muted" style={{ fontSize: 12, minWidth: 140 }}>
+        {fmtEvList(pair.events_a)}
+      </td>
+      <td style={{ textAlign: 'right' }}>{formatAverage(pair.time_a, '333')}</td>
+      <td className="muted" style={{ fontSize: 12, minWidth: 140 }}>
+        {fmtEvList(pair.events_b)}
+      </td>
+      <td style={{ textAlign: 'right' }}>{formatAverage(pair.time_b, '333')}</td>
+      <td className="value-col" style={{ textAlign: 'right' }}>
+        {formatAverage(pair.time_cs, '333')}
+      </td>
+    </>
   );
 }
 
-function CountryRows({ countries }: { countries: CountryEntry[] }) {
+function RegionTable({ regions, labelHeader }: { regions: RegionEntry[]; labelHeader: string }) {
+  if (regions.length === 0) {
+    return <div className="empty">No qualifying pair found.</div>;
+  }
   return (
-    <tbody>
-      {countries.map((c, i) => {
-        const p = c.pair;
-        return (
-          <tr key={c.country}>
-            <td className="rank-col">{i + 1}</td>
-            <td style={{ fontWeight: 500, minWidth: 80 }}>{c.country}</td>
-            <td style={{ minWidth: 150 }}>
-              <PersonLink p={p.a} />
-            </td>
-            <td style={{ minWidth: 150 }}>
-              <PersonLink p={p.b} />
-            </td>
-            <td className="muted" style={{ fontSize: 12, minWidth: 130 }}>
-              {fmtEvList(p.events_a)}
-            </td>
-            <td style={{ textAlign: 'right' }}>{formatAverage(p.time_a, '333')}</td>
-            <td className="muted" style={{ fontSize: 12, minWidth: 130 }}>
-              {fmtEvList(p.events_b)}
-            </td>
-            <td style={{ textAlign: 'right' }}>{formatAverage(p.time_b, '333')}</td>
-            <td className="value-col" style={{ textAlign: 'right' }}>
-              {formatAverage(p.time_cs, '333')}
-            </td>
+    <div style={{ overflowX: 'auto' }}>
+      <table>
+        <thead>
+          <tr>
+            <th className="rank-col">#</th>
+            <th>{labelHeader}</th>
+            <th>Person A</th>
+            <th>Person B</th>
+            <th>A&apos;s Events</th>
+            <th style={{ textAlign: 'right' }}>A&apos;s Time</th>
+            <th>B&apos;s Events</th>
+            <th style={{ textAlign: 'right' }}>B&apos;s Time</th>
+            <th style={{ textAlign: 'right', minWidth: 88 }}>Team Time</th>
           </tr>
-        );
-      })}
-    </tbody>
+        </thead>
+        <tbody>
+          {regions.map((r, i) => (
+            <tr key={r.id}>
+              <td className="rank-col">{i + 1}</td>
+              <td style={{ fontWeight: 500, minWidth: 100 }}>{r.name}</td>
+              <PairCells pair={r.pair} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-type View = 'global' | 'country';
+function GlobalCard({ pair }: { pair: PairEntry | null }) {
+  if (!pair) return <div className="empty">No qualifying pair found.</div>;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table>
+        <thead>
+          <tr>
+            <th>Person A</th>
+            <th>Person B</th>
+            <th>A&apos;s Events</th>
+            <th style={{ textAlign: 'right' }}>A&apos;s Time</th>
+            <th>B&apos;s Events</th>
+            <th style={{ textAlign: 'right' }}>B&apos;s Time</th>
+            <th style={{ textAlign: 'right', minWidth: 88 }}>Team Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <PairCells pair={pair} />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function TwoManTable() {
   const [data, setData] = useState<TwoManData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<'mini' | 'guild'>('mini');
-  const [view, setView] = useState<View>('global');
-  const [limit, setLimit] = useState<50 | 100>(50);
 
   useEffect(() => {
     fetch('/data/two_man.json')
@@ -139,59 +158,25 @@ export default function TwoManTable() {
             Guildford Challenge
           </button>
         </div>
-        <div className="toggle-group">
-          <button className={view === 'global' ? 'active' : ''} onClick={() => setView('global')}>
-            Top Pairs
-          </button>
-          <button className={view === 'country' ? 'active' : ''} onClick={() => setView('country')}>
-            By Country
-          </button>
-        </div>
-        {view === 'global' && (
-          <div className="toggle-group">
-            <button className={limit === 50 ? 'active' : ''} onClick={() => setLimit(50)}>Top 50</button>
-            <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>Top 100</button>
-          </div>
-        )}
       </div>
 
       <div className="muted" style={{ marginBottom: 12, fontSize: 12 }}>
         Events: {ch.events.map(e => SHORT[e] ?? e).join(' · ')}
         {' · '}
-        Team time = max(person A total, person B total). Split is optimised over all {(1 << ch.events.length).toLocaleString()} possible assignments.
+        Team time = max(person A total, person B total).
       </div>
 
-      <div style={{ overflowX: 'auto' }}>
-        <table>
-          <thead>
-            <tr>
-              <th className="rank-col">#</th>
-              {view === 'global' ? (
-                <>
-                  <th>Person A</th>
-                  <th>Person B</th>
-                </>
-              ) : (
-                <>
-                  <th>Country</th>
-                  <th>Person A</th>
-                  <th>Person B</th>
-                </>
-              )}
-              <th>A&apos;s Events</th>
-              <th style={{ textAlign: 'right' }}>A&apos;s Time</th>
-              <th>B&apos;s Events</th>
-              <th style={{ textAlign: 'right' }}>B&apos;s Time</th>
-              <th style={{ textAlign: 'right', minWidth: 88 }}>Team Time</th>
-            </tr>
-          </thead>
-          {view === 'global' ? (
-            <PairRows pairs={ch.pairs.slice(0, limit)} mode="global" />
-          ) : (
-            <CountryRows countries={ch.countries} />
-          )}
-        </table>
+      <h2 style={{ marginTop: 24, marginBottom: 8 }}>Global Best</h2>
+      <GlobalCard pair={ch.global} />
+
+      <h2 style={{ marginTop: 32, marginBottom: 8 }}>Best by Continent</h2>
+      <RegionTable regions={ch.continents} labelHeader="Continent" />
+
+      <h2 style={{ marginTop: 32, marginBottom: 8 }}>Best by Country</h2>
+      <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+        Only countries with a qualifying pair (two people who together cover every event) are listed.
       </div>
+      <RegionTable regions={ch.countries} labelHeader="Country" />
     </>
   );
 }
