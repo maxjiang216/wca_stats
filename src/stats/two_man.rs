@@ -10,14 +10,8 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::db::WcaDb;
-use crate::stats::team_common::{eligible_people, prune_hopeless, Person, MISSING};
+use crate::stats::team_common::{eligible_people, prune_hopeless, Person, GUILD_EVENTS, MINI_EVENTS, MISSING};
 
-const MINI_EVENTS: &[&str] = &[
-    "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh",
-];
-const GUILD_EVENTS: &[&str] = &[
-    "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh", "666", "777",
-];
 const TEAM_SIZE: usize = 2;
 
 #[derive(Serialize, Clone)]

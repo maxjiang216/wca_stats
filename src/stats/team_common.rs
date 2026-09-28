@@ -11,6 +11,13 @@ use crate::db::WcaDb;
 /// but small enough that summing a few doesn't overflow i32.
 pub const MISSING: i32 = 1_000_000_000;
 
+pub const MINI_EVENTS: &[&str] = &[
+    "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh",
+];
+pub const GUILD_EVENTS: &[&str] = &[
+    "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh", "666", "777",
+];
+
 #[derive(Clone)]
 pub struct Person {
     pub id: String,
