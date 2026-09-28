@@ -8,7 +8,7 @@ use crate::db::WcaDb;
 const EXCLUDED: &[&str] = &[
     "333bf", "444bf", "555bf", "333mbf", "333mbo", "333fm", "333ft", "magic", "mmagic",
 ];
-const TOP_N: usize = 1000;
+const TOP_N: usize = 100;
 
 #[derive(Serialize)]
 struct RankEntry {

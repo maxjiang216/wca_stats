@@ -20,14 +20,12 @@ type EventSkill = {
 
 type SkillData = Record<string, EventSkill>;
 
-const LIMITS = [100, 1000] as const;
 
 export default function SkillEstimatorTable() {
   const [data, setData] = useState<SkillData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [event, setEvent] = useState<string>('333');
-  const [limit, setLimit] = useState<100 | 1000>(100);
-
+  
   useEffect(() => {
     fetch('/data/skill_estimator.json')
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -47,7 +45,7 @@ export default function SkillEstimatorTable() {
   const skill = data[event];
   if (!skill) return null;
 
-  const rows = skill.rankings.slice(0, limit);
+  const rows = skill.rankings;
   const halfLifeDays = Math.round(Math.LN2 / skill.lambda_per_day);
 
   return (
@@ -57,7 +55,7 @@ export default function SkillEstimatorTable() {
         {events.map((ev) => (
           <button
             key={ev}
-            onClick={() => { setEvent(ev); setLimit(100); }}
+            onClick={() => setEvent(ev)}
             className={ev === event ? 'active' : ''}
           >
             {EVENT_NAMES[ev] ?? ev}
@@ -103,15 +101,6 @@ export default function SkillEstimatorTable() {
         </tbody>
       </table>
 
-      {skill.rankings.length > limit && (
-        <div style={{ marginTop: '12px' }}>
-          {LIMITS.filter((l) => l !== limit && l <= skill.rankings.length).map((l) => (
-            <button key={l} onClick={() => setLimit(l)}>
-              Show top {l}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

@@ -76,7 +76,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         let cutoff = rows
             .iter()
             .enumerate()
-            .find(|(i, _)| *i >= 1000 && rows[*i].0 != rows[i - 1].0)
+            .find(|(i, _)| *i >= 100 && rows[*i].0 != rows[i - 1].0)
             .map(|(i, _)| i)
             .unwrap_or(rows.len());
         let rows = &rows[..cutoff];

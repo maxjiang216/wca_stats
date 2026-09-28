@@ -37,7 +37,6 @@ export default function MemoBitsTable() {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('by_total');
-  const [limit, setLimit] = useState<100 | 1000>(100);
 
   useEffect(() => {
     fetch('/data/memo_bits.json')
@@ -49,7 +48,7 @@ export default function MemoBitsTable() {
   if (error) return <div className="empty">Failed to load: {error}</div>;
   if (!data) return <div className="loading">Loading…</div>;
 
-  const rows = data[tab].slice(0, limit);
+  const rows = data[tab];
 
   return (
     <>
@@ -67,10 +66,6 @@ export default function MemoBitsTable() {
           <button className={tab === 'by_day' ? 'active' : ''} onClick={() => setTab('by_day')}>
             Most per Day
           </button>
-        </div>
-        <div className="toggle-group">
-          <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>Top 100</button>
-          <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>Top 1000</button>
         </div>
       </div>
 

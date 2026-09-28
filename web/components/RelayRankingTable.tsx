@@ -4,8 +4,6 @@ import { useEffect, useState } from 'react';
 import { type RelayEntry, getStat } from '@/lib/stats';
 import { formatAverage } from '@/lib/format';
 
-type Limit = 100 | 1000;
-
 const SHORT: Record<string, string> = {
   '222': '2x2',
   '333': '3x3',
@@ -28,7 +26,6 @@ export default function RelayRankingTable({ statId }: Props) {
 
   const [data, setData] = useState<RelayEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [limit, setLimit] = useState<Limit>(100);
 
   useEffect(() => {
     setData(null);
@@ -42,20 +39,10 @@ export default function RelayRankingTable({ statId }: Props) {
   if (error) return <div className="empty">Failed to load: {error}</div>;
   if (!data)  return <div className="loading">Loading…</div>;
 
-  const rows = data.filter((r) => r.rank <= limit);
+  const rows = data;
 
   return (
     <>
-      <div className="toolbar">
-        <div className="toggle-group">
-          <button className={limit === 100  ? 'active' : ''} onClick={() => setLimit(100)}>Top 100</button>
-          <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>Top 1000</button>
-        </div>
-        <span className="muted">
-          {rows.length.toLocaleString()} of {data.length.toLocaleString()} shown
-        </span>
-      </div>
-
       <div style={{ overflowX: 'auto' }}>
         <table>
           <thead>

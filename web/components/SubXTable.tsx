@@ -32,14 +32,12 @@ function RankingTable({
   ranking,
   eventId,
   type,
-  limit,
 }: {
   ranking: Ranking;
   eventId: string;
   type: 'single' | 'avg';
-  limit: number;
 }) {
-  const entries = ranking.entries.slice(0, limit);
+  const entries = ranking.entries;
   const fmt = type === 'single'
     ? (v: number) => formatSingle(v, eventId)
     : (v: number) => formatAverage(v, eventId);
@@ -78,8 +76,7 @@ export default function SubXTable() {
   const [event, setEvent] = useState('333');
   const [type, setType] = useState<'single' | 'avg'>('single');
   const [threshIdx, setThreshIdx] = useState(0);
-  const [limit, setLimit] = useState<100 | 1000>(100);
-
+  
   useEffect(() => {
     fetch('/data/sub_x.json')
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -138,15 +135,10 @@ export default function SubXTable() {
             ))}
           </div>
         )}
-
-        <div className="toggle-group">
-          <button className={limit === 100 ? 'active' : ''} onClick={() => setLimit(100)}>Top 100</button>
-          <button className={limit === 1000 ? 'active' : ''} onClick={() => setLimit(1000)}>Top 1000</button>
-        </div>
       </div>
 
       {ranking ? (
-        <RankingTable ranking={ranking} eventId={event} type={hasAvg ? type : 'single'} limit={limit} />
+        <RankingTable ranking={ranking} eventId={event} type={hasAvg ? type : 'single'} />
       ) : (
         <div className="empty">No data for this selection.</div>
       )}

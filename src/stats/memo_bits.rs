@@ -197,7 +197,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     // most total memorization in a single competition
     let mut by_total = rows.iter().collect::<Vec<_>>();
     by_total.sort_unstable_by(|a, b| b.1.total_bits.partial_cmp(&a.1.total_bits).unwrap());
-    by_total.truncate(1000);
+    by_total.truncate(100);
     let entries_total: Vec<Entry> = by_total
         .into_iter()
         .enumerate()
@@ -213,7 +213,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         let rb = b.1.total_bits / db_ as f64;
         rb.partial_cmp(&ra).unwrap()
     });
-    by_day.truncate(1000);
+    by_day.truncate(100);
     let entries_by_day: Vec<Entry> = by_day
         .into_iter()
         .enumerate()

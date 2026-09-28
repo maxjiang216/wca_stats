@@ -31,7 +31,7 @@ use crate::db::WcaDb;
 /// Speed events covered (all except blindfolded, FMC, feet, and clock).
 const EVENTS: &[&str] =
     &["222", "333", "444", "555", "666", "777", "333oh", "pyram", "skewb", "sq1", "minx"];
-const TOP_N: usize = 1000;
+const TOP_N: usize = 100;
 const N_TRACKS: usize = 200;
 const MC_SAMPLES: usize = 20_000;
 const NU: f64 = 5.0; // Student-t dof for robust observation noise.
