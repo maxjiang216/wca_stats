@@ -24,6 +24,8 @@ pub struct Person {
 /// Everyone with a valid average in *at least one* of `events` — a person
 /// doesn't need to cover every event themselves, only the ones assigned to
 /// them, so we can't require full coverage the way `relay.rs` does.
+/// Sorted by WCA ID so every downstream search visits candidates in a fixed
+/// order (HashMap iteration order would make tie-breaks vary run to run).
 pub fn eligible_people(db: &WcaDb, events: &[&str]) -> Vec<Person> {
     let avg_lookup: HashMap<(&str, &str), i32> = db
         .ranks_average
@@ -32,7 +34,8 @@ pub fn eligible_people(db: &WcaDb, events: &[&str]) -> Vec<Person> {
         .map(|((pid, eid), r)| ((pid.as_str(), eid.as_str()), r.best))
         .collect();
 
-    db.persons
+    let mut people: Vec<Person> = db
+        .persons
         .iter()
         .filter_map(|(person_id, person)| {
             let avgs: Vec<i32> = events
@@ -57,7 +60,9 @@ pub fn eligible_people(db: &WcaDb, events: &[&str]) -> Vec<Person> {
                 total,
             })
         })
-        .collect()
+        .collect();
+    people.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    people
 }
 
 /// Drop candidates that can *never* appear in an optimal team of `team_size`.

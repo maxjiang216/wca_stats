@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::db::WcaDb;
@@ -60,48 +61,52 @@ fn get_kth(sorted_vals: &BTreeMap<i32, u32>, k: usize) -> Option<i32> {
     None
 }
 
-/// Build a timeline of when the k-th best personal best changed.
-/// Input must be sorted by jdn.
-/// Returns Vec<(jdn, kth_value)> — one entry per change in the kth-best value.
-fn kth_best_timeline(all_results: &[(i32, String, i32)], k: usize) -> Vec<(i32, i32)> {
-    let mut person_best: HashMap<String, i32> = HashMap::new();
+/// Build, for each k in `ks`, a timeline of when the k-th best personal best
+/// changed. One replay of the (jdn-sorted) results serves every k, since the
+/// per-person bests and the value multiset don't depend on k.
+/// Returns one Vec<(jdn, kth_value)> per k — an entry per change in its value.
+fn kth_best_timelines(all_results: &[(i32, &str, i32)], ks: &[usize]) -> Vec<Vec<(i32, i32)>> {
+    let mut person_best: HashMap<&str, i32> = HashMap::new();
     let mut sorted_vals: BTreeMap<i32, u32> = BTreeMap::new();
-    let mut timeline: Vec<(i32, i32)> = Vec::new();
-    let mut prev_kth: Option<i32> = None;
+    let mut timelines: Vec<Vec<(i32, i32)>> = vec![Vec::new(); ks.len()];
+    let mut prev_kth: Vec<Option<i32>> = vec![None; ks.len()];
 
-    for (jdn, pid, value) in all_results {
-        let (jdn, value) = (*jdn, *value);
+    for &(jdn, pid, value) in all_results {
         let old_best = person_best.get(pid).copied();
-        if old_best.map_or(true, |ob| value < ob) {
-            if let Some(ob) = old_best {
-                let cnt = sorted_vals.get_mut(&ob).unwrap();
-                if *cnt == 1 {
-                    sorted_vals.remove(&ob);
-                } else {
-                    *cnt -= 1;
-                }
+        if !old_best.map_or(true, |ob| value < ob) {
+            continue;
+        }
+        if let Some(ob) = old_best {
+            let cnt = sorted_vals.get_mut(&ob).unwrap();
+            if *cnt == 1 {
+                sorted_vals.remove(&ob);
+            } else {
+                *cnt -= 1;
             }
-            *sorted_vals.entry(value).or_insert(0) += 1;
-            person_best.insert(pid.clone(), value);
+        }
+        *sorted_vals.entry(value).or_insert(0) += 1;
+        person_best.insert(pid, value);
 
+        for (i, &k) in ks.iter().enumerate() {
+            // Improving to a value >= the current kth can't move the kth (the
+            // old best was even worse), so skip the O(k) rescan.
+            if prev_kth[i].is_some_and(|p| value >= p) {
+                continue;
+            }
             let new_kth = get_kth(&sorted_vals, k);
-            if new_kth != prev_kth {
+            if new_kth != prev_kth[i] {
                 if let Some(kth) = new_kth {
                     // Overwrite if same day (multiple updates on one day → keep last).
-                    match timeline.last_mut() {
-                        Some(last) if last.0 == jdn => {
-                            last.1 = kth;
-                        }
-                        _ => {
-                            timeline.push((jdn, kth));
-                        }
+                    match timelines[i].last_mut() {
+                        Some(last) if last.0 == jdn => last.1 = kth,
+                        _ => timelines[i].push((jdn, kth)),
                     }
                 }
-                prev_kth = new_kth;
+                prev_kth[i] = new_kth;
             }
         }
     }
-    timeline
+    timelines
 }
 
 /// Returns (days_in_top_k, is_still_current).
@@ -115,6 +120,16 @@ fn find_days(timeline: &[(i32, i32)], wr_jdn: i32, wr_value: i32, today_jdn: i32
         }
     }
     (today_jdn - wr_jdn, true)
+}
+
+/// Append to `map[event]` without allocating a key String on every row.
+fn push_by_event<'a>(map: &mut HashMap<String, Vec<(i32, &'a str, i32)>>, event: &str, row: (i32, &'a str, i32)) {
+    match map.get_mut(event) {
+        Some(v) => v.push(row),
+        None => {
+            map.insert(event.to_string(), vec![row]);
+        }
+    }
 }
 
 pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
@@ -135,8 +150,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
     };
 
     // (event_id) → Vec<(jdn, person_id, value)>
-    let mut event_singles: HashMap<String, Vec<(i32, String, i32)>> = HashMap::new();
-    let mut event_avgs: HashMap<String, Vec<(i32, String, i32)>> = HashMap::new();
+    let mut event_singles: HashMap<String, Vec<(i32, &str, i32)>> = HashMap::new();
+    let mut event_avgs: HashMap<String, Vec<(i32, &str, i32)>> = HashMap::new();
     // (event_id) → Vec<(jdn, value, name, pid, comp_id)>
     let mut event_wr_singles: HashMap<String, Vec<(i32, i32, String, String, String)>> =
         HashMap::new();
@@ -149,10 +164,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         };
 
         if r.best > 0 {
-            event_singles
-                .entry(r.event_id.clone())
-                .or_default()
-                .push((jdn, r.person_id.clone(), r.best));
+            push_by_event(&mut event_singles, &r.event_id, (jdn, r.person_id.as_str(), r.best));
             if r.regional_single_record.as_deref() == Some("WR") {
                 event_wr_singles
                     .entry(r.event_id.clone())
@@ -162,10 +174,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         }
 
         if r.average > 0 {
-            event_avgs
-                .entry(r.event_id.clone())
-                .or_default()
-                .push((jdn, r.person_id.clone(), r.average));
+            push_by_event(&mut event_avgs, &r.event_id, (jdn, r.person_id.as_str(), r.average));
             if r.regional_average_record.as_deref() == Some("WR") {
                 event_wr_avgs
                     .entry(r.event_id.clone())
@@ -188,20 +197,19 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         v.sort_unstable_by_key(|&(jdn, ..)| jdn);
     }
 
-    let compute = |all: &[(i32, String, i32)],
+    let compute = |all: &[(i32, &str, i32)],
                    wrs: &[(i32, i32, String, String, String)]|
      -> Vec<WrEntry> {
-        let tl2 = kth_best_timeline(all, 2);
-        let tl10 = kth_best_timeline(all, 10);
-        let tl100 = kth_best_timeline(all, 100);
+        let tls = kth_best_timelines(all, &[2, 10, 100]);
+        let (tl2, tl10, tl100) = (&tls[0], &tls[1], &tls[2]);
         wrs.iter()
             .map(|(wr_jdn, wr_value, name, pid, comp)| {
                 let (top2_days, top2_current) =
-                    find_days(&tl2, *wr_jdn, *wr_value, today_jdn);
+                    find_days(tl2, *wr_jdn, *wr_value, today_jdn);
                 let (top10_days, top10_current) =
-                    find_days(&tl10, *wr_jdn, *wr_value, today_jdn);
+                    find_days(tl10, *wr_jdn, *wr_value, today_jdn);
                 let (top100_days, top100_current) =
-                    find_days(&tl100, *wr_jdn, *wr_value, today_jdn);
+                    find_days(tl100, *wr_jdn, *wr_value, today_jdn);
                 WrEntry {
                     name: name.clone(),
                     pid: pid.clone(),
@@ -238,23 +246,21 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         }
     }
 
-    let mut single_out: HashMap<String, Vec<WrEntry>> = HashMap::new();
-    let mut avg_out: HashMap<String, Vec<WrEntry>> = HashMap::new();
-
-    for (eid, wrs) in &event_wr_singles {
-        let all = event_singles.get(eid).map(Vec::as_slice).unwrap_or(&[]);
-        let entries = compute(all, wrs);
-        if !entries.is_empty() {
-            single_out.insert(eid.clone(), entries);
-        }
-    }
-    for (eid, wrs) in &event_wr_avgs {
-        let all = event_avgs.get(eid).map(Vec::as_slice).unwrap_or(&[]);
-        let entries = compute(all, wrs);
-        if !entries.is_empty() {
-            avg_out.insert(eid.clone(), entries);
-        }
-    }
+    // Events (and single vs average) are independent — compute in parallel.
+    let run = |wr_map: &HashMap<String, Vec<(i32, i32, String, String, String)>>,
+               all_map: &HashMap<String, Vec<(i32, &str, i32)>>|
+     -> HashMap<String, Vec<WrEntry>> {
+        wr_map
+            .par_iter()
+            .filter_map(|(eid, wrs)| {
+                let all = all_map.get(eid).map(Vec::as_slice).unwrap_or(&[]);
+                let entries = compute(all, wrs);
+                (!entries.is_empty()).then(|| (eid.clone(), entries))
+            })
+            .collect()
+    };
+    let (single_out, avg_out) =
+        rayon::join(|| run(&event_wr_singles, &event_singles), || run(&event_wr_avgs, &event_avgs));
 
     eprintln!(
         "  wr_longevity: {} events with single WRs, {} with average WRs",

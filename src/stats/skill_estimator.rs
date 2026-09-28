@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::db::WcaDb;
@@ -217,10 +218,16 @@ fn ternary_search_lambda(histories: &[PersonHistory]) -> f64 {
     for _ in 0..100 {
         let m1 = lo + (hi - lo) / 3.0;
         let m2 = hi - (hi - lo) / 3.0;
+        let (prev_lo, prev_hi) = (lo, hi);
         if compute_loss(histories, m1) <= compute_loss(histories, m2) {
             hi = m2;
         } else {
             lo = m1;
+        }
+        // Once the bracket is below float resolution it stops moving, and every
+        // remaining iteration would repeat the same evaluation — exact to stop.
+        if lo == prev_lo && hi == prev_hi {
+            break;
         }
     }
     (lo + hi) / 2.0
@@ -246,12 +253,14 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         event_results.entry(eid).or_default().push(i);
     }
 
-    let mut all_events: HashMap<String, EventSkill> = HashMap::new();
-    let mut comparisons: HashMap<String, MethodComparison> = HashMap::new();
-
-    for (event_id, indices) in &event_results {
+    // Events are independent: run them in parallel, buffering each one's log.
+    let per_event: Vec<(String, EventSkill, MethodComparison, String)> = event_results
+        .par_iter()
+        .map(|(event_id, indices)| {
+        use std::fmt::Write as _;
+        let mut log = String::new();
         // (person_id, comp_id) -> (sum_cs, count, name, country)
-        let mut pc_map: HashMap<(String, String), (f64, u32, String, String)> = HashMap::new();
+        let mut pc_map: HashMap<(&str, &str), (f64, u32, &str, &str)> = HashMap::new();
 
         for &i in indices {
             let r = &db.results[i];
@@ -284,27 +293,27 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
             }
 
             let entry = pc_map
-                .entry((r.person_id.clone(), r.competition_id.clone()))
-                .or_insert_with(|| (0.0, 0, r.person_name.clone(), r.person_country_id.clone()));
+                .entry((r.person_id.as_str(), r.competition_id.as_str()))
+                .or_insert_with(|| (0.0, 0, r.person_name.as_str(), r.person_country_id.as_str()));
             entry.0 += sum;
             entry.1 += cnt;
         }
 
         // Group by person_id -> PersonHistory.
-        let mut person_map: HashMap<String, PersonHistory> = HashMap::new();
+        let mut person_map: HashMap<&str, PersonHistory> = HashMap::new();
         for ((person_id, comp_id), (sum, cnt, name, country)) in pc_map {
-            let Some(&jdn) = comp_day.get(comp_id.as_str()) else {
+            let Some(&jdn) = comp_day.get(comp_id) else {
                 continue;
             };
             let mean_cs = sum / cnt as f64;
-            let h = person_map.entry(person_id.clone()).or_insert_with(|| {
+            let h = person_map.entry(person_id).or_insert_with(|| {
                 // Prefer current name/country from db.persons if available.
                 let (n, c) = db
                     .persons
-                    .get(&person_id)
+                    .get(person_id)
                     .map(|p| (p.name.clone(), p.country_id.clone()))
-                    .unwrap_or_else(|| (name, country));
-                PersonHistory { person_id: person_id.clone(), name: n, country: c, comps: Vec::new() }
+                    .unwrap_or_else(|| (name.to_string(), country.to_string()));
+                PersonHistory { person_id: person_id.to_string(), name: n, country: c, comps: Vec::new() }
             });
             h.comps.push((jdn, mean_cs, cnt));
         }
@@ -346,7 +355,8 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         entries.truncate(TOP_N);
 
         let half_life = if lambda > 0.0 { 2f64.ln() / lambda } else { f64::INFINITY };
-        eprintln!(
+        let _ = writeln!(
+            log,
             "  skill_estimator {event_id}: {} people, lambda={:.6}/day ({:.0}-day half-life)",
             entries.len(), lambda, half_life,
         );
@@ -356,6 +366,7 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
         // pred: the EWMA estimate going into the competition (the "prediction")
         // actual: observed mean_cs at the competition
         // career_days: jdn of this competition minus jdn of person's first competition
+        if crate::stats::diag_enabled() {
         struct PredPoint { pred: f64, actual: f64, career_days: i32 }
         let mut all_preds: Vec<PredPoint> = Vec::new();
         for h in &histories {
@@ -411,25 +422,33 @@ pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {
             eprintln!("      {label:8} (n={:6}): bias = {:+.2}%", slice.len(), mean_rel * 100.0);
             age_lo = age_hi;
         }
+        } // diag
 
         // ── Method comparison ─────────────────────────────────────────────────
         let (ewma_sc, pb_sc, n_dis) = compare_methods(indices, db, &comp_day, &histories, lambda);
         let total_scored = ewma_sc + pb_sc;
         let ewma_pct = if total_scored > 0.0 { ewma_sc / total_scored * 100.0 } else { 50.0 };
-        eprintln!(
+        let _ = writeln!(
+            log,
             "    method comparison: {n_dis} disagreements — EWMA {ewma_pct:.1}% vs PB {:.1}%  \
              (weighted scores: EWMA {ewma_sc:.4}, PB {pb_sc:.4})",
             100.0 - ewma_pct,
         );
-        comparisons.insert(
-            event_id.to_string(),
-            MethodComparison { n_disagree: n_dis, ewma_score: ewma_sc, pb_score: pb_sc, ewma_pct },
-        );
-
-        all_events.insert(
+        (
             event_id.to_string(),
             EventSkill { lambda_per_day: lambda, rankings: entries },
-        );
+            MethodComparison { n_disagree: n_dis, ewma_score: ewma_sc, pb_score: pb_sc, ewma_pct },
+            log,
+        )
+        })
+        .collect();
+
+    let mut all_events: HashMap<String, EventSkill> = HashMap::new();
+    let mut comparisons: HashMap<String, MethodComparison> = HashMap::new();
+    for (event_id, skill, cmp, log) in per_event {
+        eprint!("{log}");
+        comparisons.insert(event_id.clone(), cmp);
+        all_events.insert(event_id, skill);
     }
 
     let path = format!("{out_dir}/skill_estimator.json");

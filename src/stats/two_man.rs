@@ -83,7 +83,7 @@ fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
             })
         })
         .collect();
-    continents.sort_by_key(|r| r.pair.time_cs);
+    continents.sort_by(|x, y| (x.pair.time_cs, &x.name).cmp(&(y.pair.time_cs, &y.name)));
 
     let mut countries: Vec<RegionEntry> = by_country
         .into_iter()
@@ -100,7 +100,7 @@ fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
             })
         })
         .collect();
-    countries.sort_by_key(|r| r.pair.time_cs);
+    countries.sort_by(|x, y| (x.pair.time_cs, &x.name).cmp(&(y.pair.time_cs, &y.name)));
 
     eprintln!(
         "  2-man {} events: global={:?}, {} continents, {} countries",
@@ -166,14 +166,15 @@ fn best_pair_raw(people: &[Person], n: usize) -> Option<(PairEntry, usize)> {
                 max_min = max_min.max(v);
             }
             let lower = (sum_min / 2).max(max_min);
-            if lower >= best_score {
+            // `>` not `>=`: a pair tying the best time can still win on total.
+            if lower > best_score {
                 continue;
             }
 
             let base_b = b * n_masks;
             for mask in 0..n_masks {
                 let ta = ss[base_a + mask];
-                if ta >= MISSING || ta >= best_score {
+                if ta >= MISSING || ta > best_score {
                     continue;
                 }
                 let tb = ss[base_b + (full_mask ^ mask)];

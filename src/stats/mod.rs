@@ -21,6 +21,13 @@ mod wr_cross_rank;
 mod wr_half_life;
 mod wr_longevity;
 
+/// Research diagnostics that only print to stderr (calibration probes,
+/// hyperparameter sweeps, bias breakdowns) are expensive and off by default;
+/// set `STATS_DIAG=1` to run them.
+pub fn diag_enabled() -> bool {
+    std::env::var_os("STATS_DIAG").is_some()
+}
+
 pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     if std::env::var("ONLY_THREE_MAN").is_ok() {
         eprintln!("two_man");
@@ -68,41 +75,40 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
         memo_bits::write(db, out_dir)?;
         return Ok(());
     }
-    eprintln!("nth_solve");
-    nth_solve::write(db, out_dir)?;
-    eprintln!("mbld");
-    mbld::write(db, out_dir)?;
-    eprintln!("mbld_rankings");
-    mbld::write_rankings(db, out_dir)?;
-    eprintln!("ranking_countries");
-    ranking_countries::write(db, out_dir)?;
-    eprintln!("relay");
-    relay::write(db, out_dir)?;
-    eprintln!("ranks_export");
-    ranks_export::write(db, out_dir)?;
-    eprintln!("nations_cup");
-    nations_cup::write(db, out_dir)?;
-    eprintln!("two_man");
-    two_man::write(db, out_dir)?;
-    eprintln!("three_man");
-    three_man::write(db, out_dir)?;
-    eprintln!("sub_x");
-    sub_x::write(db, out_dir)?;
-    eprintln!("wr_half_life");
-    wr_half_life::write(db, out_dir)?;
-    eprintln!("skill_estimator");
-    skill_estimator::write(db, out_dir)?;
-    eprintln!("kalman_skill");
-    kalman_skill::write(db, out_dir)?;
-    eprintln!("first_records");
-    first_records::write(db, out_dir)?;
-    eprintln!("wr_longevity");
-    wr_longevity::write(db, out_dir)?;
-    eprintln!("wr_cross_rank");
-    wr_cross_rank::write(db, out_dir)?;
-    eprintln!("dominance");
-    dominance::write(db, out_dir)?;
-    eprintln!("memo_bits");
-    memo_bits::write(db, out_dir)?;
+    let mut timings: Vec<(&str, std::time::Duration)> = Vec::new();
+    macro_rules! stage {
+        ($name:expr, $call:expr) => {{
+            eprintln!("{}", $name);
+            let t = std::time::Instant::now();
+            $call?;
+            let d = t.elapsed();
+            eprintln!("  [{} took {:.2?}]", $name, d);
+            timings.push(($name, d));
+        }};
+    }
+    stage!("nth_solve", nth_solve::write(db, out_dir));
+    stage!("mbld", mbld::write(db, out_dir));
+    stage!("mbld_rankings", mbld::write_rankings(db, out_dir));
+    stage!("ranking_countries", ranking_countries::write(db, out_dir));
+    stage!("relay", relay::write(db, out_dir));
+    stage!("ranks_export", ranks_export::write(db, out_dir));
+    stage!("nations_cup", nations_cup::write(db, out_dir));
+    stage!("two_man", two_man::write(db, out_dir));
+    stage!("three_man", three_man::write(db, out_dir));
+    stage!("sub_x", sub_x::write(db, out_dir));
+    stage!("wr_half_life", wr_half_life::write(db, out_dir));
+    stage!("skill_estimator", skill_estimator::write(db, out_dir));
+    stage!("kalman_skill", kalman_skill::write(db, out_dir));
+    stage!("first_records", first_records::write(db, out_dir));
+    stage!("wr_longevity", wr_longevity::write(db, out_dir));
+    stage!("wr_cross_rank", wr_cross_rank::write(db, out_dir));
+    stage!("dominance", dominance::write(db, out_dir));
+    stage!("memo_bits", memo_bits::write(db, out_dir));
+
+    timings.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("\nStage timings (slowest first):");
+    for (name, d) in &timings {
+        eprintln!("  {name:<20} {d:>10.2?}");
+    }
     Ok(())
 }

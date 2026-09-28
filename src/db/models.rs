@@ -35,14 +35,6 @@ pub struct RawResult {
     pub person_country_id: String,
 }
 
-/// Individual solve attempt linked to a result row.
-/// `value` uses the same centisecond encoding as `best`/`average`.
-#[derive(Debug, Deserialize)]
-pub struct RawResultAttempt {
-    pub value: i32,
-    pub attempt_number: u8,
-    pub result_id: u32,
-}
 
 /// One row per current name (sub_id == 1); sub_id > 1 rows are historical name changes.
 #[derive(Debug, Deserialize)]

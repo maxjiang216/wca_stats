@@ -45,6 +45,59 @@ struct ChallengeOutput {
     triples: Vec<TripleEntry>,
 }
 
+/// Optimal 3-way split of all events among `tri`, as (max, total, mask_a,
+/// mask_b), minimizing (max, total) lexicographically — but only if strictly
+/// better than `cut`, else None. A branch is cut only when a partial sum
+/// strictly exceeds the best max so far, so equal-max splits still compete on
+/// the total tiebreak.
+fn best_split3(
+    people: &[Person],
+    tri: [usize; 3],
+    order: &[usize],
+    cut: (i32, i32),
+) -> Option<(i32, i32, usize, usize)> {
+    fn rec(
+        people: &[Person],
+        tri: &[usize; 3],
+        order: &[usize],
+        depth: usize,
+        partial: &mut [i32; 3],
+        masks: &mut [usize; 3],
+        best: &mut (i32, i32, usize, usize),
+        found: &mut bool,
+    ) {
+        if depth == order.len() {
+            let score = partial[0].max(partial[1]).max(partial[2]);
+            let total = partial[0] + partial[1] + partial[2];
+            if (score, total) < (best.0, best.1) {
+                *best = (score, total, masks[0], masks[1]);
+                *found = true;
+            }
+            return;
+        }
+        let e = order[depth];
+        for k in 0..3 {
+            let v = people[tri[k]].avgs[e];
+            if v >= MISSING {
+                continue;
+            }
+            let nv = partial[k] + v;
+            if nv > best.0 {
+                continue;
+            }
+            partial[k] = nv;
+            masks[k] |= 1 << e;
+            rec(people, tri, order, depth + 1, partial, masks, best, found);
+            partial[k] -= v;
+            masks[k] &= !(1 << e);
+        }
+    }
+    let mut best = (cut.0, cut.1, 0, 0);
+    let mut found = false;
+    rec(people, &tri, order, 0, &mut [0; 3], &mut [0; 3], &mut best, &mut found);
+    found.then_some(best)
+}
+
 fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
     let n = events.len();
     let n_masks = 1usize << n;
@@ -78,6 +131,23 @@ fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
         }
     }
 
+    // DFS event order: slowest events first, so a doomed branch overshoots the
+    // cutoff within a step or two instead of after enumerating every subset.
+    let mut event_order: Vec<usize> = (0..n).collect();
+    {
+        let mut sum = vec![0i64; n];
+        let mut cnt = vec![0i64; n];
+        for p in &people {
+            for e in 0..n {
+                if p.avgs[e] < MISSING {
+                    sum[e] += p.avgs[e] as i64;
+                    cnt[e] += 1;
+                }
+            }
+        }
+        event_order.sort_unstable_by_key(|&e| std::cmp::Reverse(if cnt[e] > 0 { sum[e] / cnt[e] } else { 0 }));
+    }
+
     // top: (max_time, total_time, a, b, mask_a, mask_b) sorted ascending by (max, total).
     let mut top: Vec<(i32, i32, usize, usize, usize, usize, usize)> = Vec::with_capacity(TOP_N + 1);
     let mut threshold = i32::MAX;
@@ -105,47 +175,14 @@ fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
                     continue;
                 }
 
-                let base_a = a * n_masks;
-                let base_b = b * n_masks;
-                let base_c = c * n_masks;
-
-                let mut best_score = i32::MAX;
-                let mut best_minor = i32::MAX;
-                let mut best_mask_a = 0usize;
-                let mut best_mask_b = 0usize;
-
-                for mask_a in 0..n_masks {
-                    let ta = ss[base_a + mask_a];
-                    if ta >= best_score || ta >= MISSING {
-                        continue;
-                    }
-                    let rem = full_mask ^ mask_a;
-                    // Enumerate submasks of `rem` for B; C gets the leftover.
-                    let mut sub = rem;
-                    loop {
-                        let tb = ss[base_b + sub];
-                        let tc = ss[base_c + (rem ^ sub)];
-                        if tb < MISSING && tc < MISSING {
-                            let score = ta.max(tb).max(tc);
-                            let total = ta + tb + tc;
-                            if (score, total) < (best_score, best_minor) {
-                                best_score = score;
-                                best_minor = total;
-                                best_mask_a = mask_a;
-                                best_mask_b = sub;
-                            }
-                        }
-                        if sub == 0 {
-                            break;
-                        }
-                        sub = (sub - 1) & rem;
-                    }
-                }
-
-                // No feasible 3-way split (some event isn't covered by any of a/b/c).
-                if best_score == i32::MAX {
+                // Only splits that would make the current top-N matter.
+                let cut = if top.len() < TOP_N { (i32::MAX, i32::MAX) } else { (threshold, threshold_minor) };
+                // None: no feasible split (an event nobody can do) or none beats the cut.
+                let Some((best_score, best_minor, best_mask_a, best_mask_b)) =
+                    best_split3(&people, [a, b, c], &event_order, cut)
+                else {
                     continue;
-                }
+                };
 
                 if top.len() < TOP_N || (best_score, best_minor) < (threshold, threshold_minor) {
                     top.push((best_score, best_minor, a, b, c, best_mask_a, best_mask_b));
