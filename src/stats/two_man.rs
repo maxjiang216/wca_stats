@@ -1,9 +1,16 @@
-use std::collections::HashMap;
+//! 2-man Guildford: best split of a fixed event set across 2 teammates,
+//! reported globally, ranked by continent, and ranked by country.
+//!
+//! Each of those is a single "who's the best pair" question over a
+//! restricted population (the world / a continent / a country), so we only
+//! ever need the single best pair per group — see `team_common::prune_hopeless`
+//! for why that's the case the dominance pruning is sound for.
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::db::WcaDb;
+use crate::stats::team_common::{eligible_people, prune_hopeless, Person, MISSING};
 
 const MINI_EVENTS: &[&str] = &[
     "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh",
@@ -11,6 +18,7 @@ const MINI_EVENTS: &[&str] = &[
 const GUILD_EVENTS: &[&str] = &[
     "222", "333", "444", "555", "clock", "minx", "skewb", "sq1", "pyram", "333oh", "666", "777",
 ];
+const TEAM_SIZE: usize = 2;
 
 #[derive(Serialize, Clone)]
 struct PersonRef {
@@ -31,181 +39,176 @@ struct PairEntry {
 }
 
 #[derive(Serialize)]
-struct CountryEntry {
-    country: String,
+struct RegionEntry {
+    id: String,
+    name: String,
     pair: PairEntry,
 }
 
 #[derive(Serialize)]
 struct ChallengeOutput {
     events: Vec<String>,
-    pairs: Vec<PairEntry>,
-    countries: Vec<CountryEntry>,
-}
-
-struct Person {
-    id: String,
-    name: String,
-    country: String,
-    avgs: Vec<i32>,
-    total: i32,
+    global: Option<PairEntry>,
+    continents: Vec<RegionEntry>,
+    countries: Vec<RegionEntry>,
 }
 
 fn solve(db: &WcaDb, events: &[&str]) -> ChallengeOutput {
     let n = events.len();
-    let n_masks = 1usize << n;
-    let full_mask = n_masks - 1;
 
-    // Fast (&str, &str) → best average lookup (avoids String clones per lookup).
-    let avg_lookup: HashMap<(&str, &str), i32> = db
-        .ranks_average
-        .iter()
-        .filter(|(_, r)| r.best > 0)
-        .map(|((pid, eid), r)| ((pid.as_str(), eid.as_str()), r.best))
-        .collect();
+    let all_people = eligible_people(db, events);
+    eprintln!("  2-man {} events: {} eligible people", n, all_people.len());
 
-    // Collect people who have valid averages for every event in this challenge.
-    let mut people: Vec<Person> = db
-        .persons
-        .iter()
-        .filter_map(|(person_id, person)| {
-            let avgs: Vec<i32> = events
-                .iter()
-                .map(|&ev| avg_lookup.get(&(person_id.as_str(), ev)).copied())
-                .collect::<Option<Vec<i32>>>()?;
-            let total = avgs.iter().sum();
-            Some(Person {
-                id: person_id.clone(),
-                name: person.name.clone(),
-                country: person.country_id.clone(),
-                avgs,
-                total,
+    let global_pool = prune_hopeless(all_people.clone(), n, TEAM_SIZE);
+    eprintln!("  2-man {} events: {} survive global pruning", n, global_pool.len());
+    let global = best_pair_with_events(&global_pool, n, events);
+
+    let mut by_continent: std::collections::HashMap<String, Vec<Person>> = std::collections::HashMap::new();
+    let mut by_country: std::collections::HashMap<String, Vec<Person>> = std::collections::HashMap::new();
+    for p in &all_people {
+        by_continent.entry(p.continent.clone()).or_default().push(p.clone());
+        by_country.entry(p.country.clone()).or_default().push(p.clone());
+    }
+
+    let mut continents: Vec<RegionEntry> = by_continent
+        .into_iter()
+        .filter(|(id, _)| !id.is_empty())
+        .filter_map(|(id, group)| {
+            let pool = prune_hopeless(group, n, TEAM_SIZE);
+            let pair = best_pair_with_events(&pool, n, events)?;
+            Some(RegionEntry {
+                id: id.clone(),
+                name: db.continents.get(&id).map(|c| c.name.clone()).unwrap_or(id),
+                pair,
             })
         })
         .collect();
+    continents.sort_by_key(|r| r.pair.time_cs);
 
-    // Sort by total time ascending so fastest people are evaluated first.
-    // This tightens the pruning threshold quickly.
-    people.sort_by_key(|p| p.total);
+    let mut countries: Vec<RegionEntry> = by_country
+        .into_iter()
+        .filter_map(|(id, group)| {
+            if group.len() < 2 {
+                return None;
+            }
+            let pool = prune_hopeless(group, n, TEAM_SIZE);
+            let pair = best_pair_with_events(&pool, n, events)?;
+            Some(RegionEntry {
+                id: id.clone(),
+                name: db.countries.get(&id).map(|c| c.name.clone()).unwrap_or(id),
+                pair,
+            })
+        })
+        .collect();
+    countries.sort_by_key(|r| r.pair.time_cs);
+
+    eprintln!(
+        "  2-man {} events: global={:?}, {} continents, {} countries",
+        n,
+        global.as_ref().map(|p| p.time_cs),
+        continents.len(),
+        countries.len()
+    );
+
+    ChallengeOutput {
+        events: events.iter().map(|s| s.to_string()).collect(),
+        global,
+        continents,
+        countries,
+    }
+}
+
+/// Like `best_pair`, but also fills in the event-split fields (needs `events`
+/// for the names, which the low-level search doesn't carry).
+fn best_pair_with_events(people: &[Person], n: usize, events: &[&str]) -> Option<PairEntry> {
+    let (pair, mask_a) = best_pair_raw(people, n)?;
+    let mut pair = pair;
+    pair.events_a = (0..n).filter(|&e| mask_a & (1 << e) != 0).map(|e| events[e].to_string()).collect();
+    pair.events_b = (0..n).filter(|&e| mask_a & (1 << e) == 0).map(|e| events[e].to_string()).collect();
+    Some(pair)
+}
+
+fn best_pair_raw(people: &[Person], n: usize) -> Option<(PairEntry, usize)> {
     let m = people.len();
-    eprintln!("  2-man {} events: {} persons, {} pairs", n, m, m * (m - 1) / 2);
+    if m < 2 {
+        return None;
+    }
+    let n_masks = 1usize << n;
+    let full_mask = n_masks - 1;
 
-    // Precompute subset sums: ss[p * n_masks + mask] = total time for person p doing
-    // exactly the events indicated by the bits of mask.
-    // Build via DP: flip one bit at a time.
     let mut ss: Vec<i32> = vec![0i32; m * n_masks];
     for p in 0..m {
         let base = p * n_masks;
         for mask in 1..n_masks {
             let lsb = mask & mask.wrapping_neg();
             let bit = lsb.trailing_zeros() as usize;
-            ss[base + mask] = ss[base + (mask ^ lsb)] + people[p].avgs[bit];
+            let prev = ss[base + (mask ^ lsb)];
+            ss[base + mask] = if prev >= MISSING || people[p].avgs[bit] >= MISSING {
+                MISSING
+            } else {
+                prev + people[p].avgs[bit]
+            };
         }
     }
 
-    // ── Main search ──────────────────────────────────────────────────────────
-    // top: (max_time, min_time, a, b, mask_a) sorted ascending by (max, min).
-    // Tiebreak: lower min_time (faster person's total) is better.
-    let mut top: Vec<(i32, i32, usize, usize, usize)> = Vec::with_capacity(101);
-    let mut threshold = i32::MAX;         // max_time of 100th-best pair (primary prune key)
-    let mut threshold_minor = i32::MAX;  // min_time of 100th-best pair (secondary)
-
-    // best_country: country → (max_time, min_time, a, b, mask_a)
-    let mut best_country: HashMap<String, (i32, i32, usize, usize, usize)> = HashMap::new();
+    let mut best_score = i32::MAX;
+    let mut best_total = i32::MAX;
+    let mut best: (usize, usize, usize) = (0, 0, 0);
 
     for a in 0..m {
         let base_a = a * n_masks;
-
         for b in (a + 1)..m {
-            // Lower bound on max_time: sum_e min(avg_a[e], avg_b[e]) / 2.
-            let lower: i32 = (0..n)
-                .map(|e| people[a].avgs[e].min(people[b].avgs[e]))
-                .sum::<i32>()
-                / 2;
-            if lower >= threshold {
+            let mut sum_min = 0i32;
+            let mut max_min = 0i32;
+            for e in 0..n {
+                let v = people[a].avgs[e].min(people[b].avgs[e]);
+                sum_min += v;
+                max_min = max_min.max(v);
+            }
+            let lower = (sum_min / 2).max(max_min);
+            if lower >= best_score {
                 continue;
             }
 
             let base_b = b * n_masks;
-
-            // Find the split minimising (max_time, min_time) lexicographically.
-            let mut best_score = i32::MAX;
-            let mut best_minor = i32::MAX;
-            let mut best_mask = 0usize;
             for mask in 0..n_masks {
                 let ta = ss[base_a + mask];
+                if ta >= MISSING || ta >= best_score {
+                    continue;
+                }
                 let tb = ss[base_b + (full_mask ^ mask)];
-                let score = if ta > tb { ta } else { tb };
-                let minor = if ta < tb { ta } else { tb };
-                if (score, minor) < (best_score, best_minor) {
+                if tb >= MISSING {
+                    continue;
+                }
+                let score = ta.max(tb);
+                let total = ta + tb;
+                if (score, total) < (best_score, best_total) {
                     best_score = score;
-                    best_minor = minor;
-                    best_mask = mask;
-                }
-            }
-
-            // Update same-country best.
-            if people[a].country == people[b].country {
-                let e = best_country
-                    .entry(people[a].country.clone())
-                    .or_insert((i32::MAX, i32::MAX, 0, 0, 0));
-                if (best_score, best_minor) < (e.0, e.1) {
-                    *e = (best_score, best_minor, a, b, best_mask);
-                }
-            }
-
-            // Update global top-100.
-            if top.len() < 100 || (best_score, best_minor) < (threshold, threshold_minor) {
-                top.push((best_score, best_minor, a, b, best_mask));
-                top.sort_unstable_by_key(|&(s, m, _, _, _)| (s, m));
-                top.truncate(100);
-                if top.len() == 100 {
-                    threshold = top[99].0;
-                    threshold_minor = top[99].1;
+                    best_total = total;
+                    best = (a, b, mask);
                 }
             }
         }
     }
 
-    // ── Convert indices → output structs ─────────────────────────────────────
-    let mk_pair = |ai: usize, bi: usize, mask_a: usize| -> PairEntry {
-        let ta = ss[ai * n_masks + mask_a];
-        let tb = ss[bi * n_masks + (full_mask ^ mask_a)];
-        let score = ta.max(tb);
-        let events_a: Vec<String> = (0..n)
-            .filter(|&e| mask_a & (1 << e) != 0)
-            .map(|e| events[e].to_string())
-            .collect();
-        let events_b: Vec<String> = (0..n)
-            .filter(|&e| mask_a & (1 << e) == 0)
-            .map(|e| events[e].to_string())
-            .collect();
+    if best_score == i32::MAX {
+        return None;
+    }
+    let (ai, bi, mask_a) = best;
+    let ta = ss[ai * n_masks + mask_a];
+    let tb = ss[bi * n_masks + (full_mask ^ mask_a)];
+    Some((
         PairEntry {
             a: PersonRef { id: people[ai].id.clone(), name: people[ai].name.clone(), country: people[ai].country.clone() },
             b: PersonRef { id: people[bi].id.clone(), name: people[bi].name.clone(), country: people[bi].country.clone() },
-            time_cs: score,
+            time_cs: ta.max(tb),
             time_a: ta,
             time_b: tb,
-            events_a,
-            events_b,
-        }
-    };
-
-    let pairs: Vec<PairEntry> = top.iter().map(|&(_, _, a, b, m)| mk_pair(a, b, m)).collect();
-
-    let mut countries: Vec<CountryEntry> = best_country
-        .into_iter()
-        .map(|(country, (_, _, a, b, m))| CountryEntry { country, pair: mk_pair(a, b, m) })
-        .collect();
-    countries.sort_by_key(|c| (c.pair.time_cs, c.pair.time_a.min(c.pair.time_b)));
-
-    eprintln!("  → {} global pairs, {} countries", pairs.len(), countries.len());
-
-    ChallengeOutput {
-        events: events.iter().map(|s| s.to_string()).collect(),
-        pairs,
-        countries,
-    }
+            events_a: Vec::new(),
+            events_b: Vec::new(),
+        },
+        mask_a,
+    ))
 }
 
 pub fn write(db: &WcaDb, out_dir: &str) -> Result<()> {

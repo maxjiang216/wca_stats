@@ -7,9 +7,10 @@ export default function TwoManPage() {
         <h1>2-Man Guildford</h1>
         <p className="desc">
           Two competitors split the events and solve them simultaneously. The team time is the
-          bottleneck — max of each person&apos;s total. The optimal event split is found by exhaustive
-          search over all possible assignments (1,024 for Mini, 4,096 for Guildford).
-          Only competitors with a valid average for every event in the challenge qualify.
+          bottleneck — max of each person&apos;s total. Shown globally, then the best pair for each
+          continent, then for each country (countries only appear if some pair of their competitors
+          can cover every event between them). A competitor doesn&apos;t need a valid average in
+          every event themselves — only in whichever events they end up assigned.
         </p>
       </div>
       <TwoManTable />
