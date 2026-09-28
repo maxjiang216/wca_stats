@@ -49,16 +49,29 @@ struct ChallengeOutput {
     countries: Vec<RegionEntry>,
 }
 
+/// Teams are ranked by member times sorted longest-first, compared in order:
+/// slowest member first, ties broken by the 2nd slowest, then 3rd, then 4th.
+const MAX_K: usize = 4;
+type Key = [i32; MAX_K];
+
+/// Sorted-descending times, padded with 0 past `k` (same padding for every
+/// team of a given size, so it never decides a comparison).
+fn key_of(partial: &[i32]) -> Key {
+    let mut key = [0; MAX_K];
+    key[..partial.len()].copy_from_slice(partial);
+    key[..partial.len()].sort_unstable_by(|a, b| b.cmp(a));
+    key
+}
+
 /// Best team found in one pool: indices into the pool plus each member's
-/// event mask, minimizing (max time, total time), then combo indices.
+/// event mask; minimal by (key, combo indices).
 struct Found {
-    score: i32,
-    total: i32,
+    key: Key,
     combo: Vec<usize>,
     masks: Vec<u32>,
 }
 
-/// (max, total) packed so `fetch_min` orders it lexicographically.
+/// First two key entries packed so `fetch_min` orders them lexicographically.
 fn pack(score: i32, total: i32) -> u64 {
     ((score as u32 as u64) << 32) | total as u32 as u64
 }
@@ -74,18 +87,27 @@ struct Search<'a> {
     /// mins[d][e] = fastest time at event e among the first d+1 chosen members.
     mins: Vec<Vec<i32>>,
     combo: Vec<usize>,
-    /// Best (max, total) any worker has found — used only for pruning, and
-    /// only to cut candidates that are *strictly* worse, so every co-optimal
-    /// team is still reached and the final choice doesn't depend on timing.
+    /// First two key entries of the best team any worker has found — used
+    /// only for pruning, and only to cut candidates that are *strictly* worse,
+    /// so every co-optimal team is still reached and the final choice doesn't
+    /// depend on timing.
     shared: &'a AtomicU64,
-    best: (i32, i32),
+    best: Key,
     best_combo: Vec<usize>,
     best_masks: Vec<u32>,
 }
 
 impl Search<'_> {
+    /// Best known (slowest, 2nd slowest), locally or from any worker.
     fn bound(&self) -> (i32, i32) {
-        self.best.min(unpack(self.shared.load(Ordering::Relaxed)))
+        (self.best[0], self.best[1]).min(unpack(self.shared.load(Ordering::Relaxed)))
+    }
+
+    /// Lower bound on the 2nd-slowest time of any split whose slowest time is
+    /// pinned at `max` and whose total is at least `total`.
+    fn second_floor(&self, total: i64, max: i32) -> i64 {
+        let others = (self.k - 1) as i64;
+        (total - max as i64 + others - 1) / others
     }
 
     fn combos(&mut self, start: usize, depth: usize) {
@@ -116,9 +138,9 @@ impl Search<'_> {
         }
         let lower = ((sum / self.k as i64) as i32).max(max);
         let b = self.bound();
-        // Every split's total is >= the sum of per-event fastest times, so a
-        // team that can at best tie the max is out if that sum is already worse.
-        if lower > b.0 || (lower == b.0 && sum > b.1 as i64) {
+        // A team that can at best tie the slowest time is out if its 2nd
+        // slowest is already forced worse: every split totals >= `sum`.
+        if lower > b.0 || (lower == b.0 && self.second_floor(sum, b.0) > b.1 as i64) {
             return;
         }
         // rest[d] = sum of the team's fastest times over events order[d..].
@@ -135,21 +157,26 @@ impl Search<'_> {
     /// strictly exceeds the best max, so equal-max splits still compete on
     /// the total tiebreak.
     fn split(&mut self, depth: usize, rest: &[i32], partial: &mut [i32], masks: &mut [u32]) {
-        let total: i32 = partial.iter().sum();
+        let key = key_of(partial);
         if depth == self.order.len() {
-            let score = *partial.iter().max().unwrap();
-            if (score, total) < self.best {
-                self.best = (score, total);
+            if key < self.best {
+                self.best = key;
                 self.best_combo = self.combo.clone();
                 self.best_masks = masks.to_vec();
-                self.shared.fetch_min(pack(score, total), Ordering::Relaxed);
+                self.shared.fetch_min(pack(key[0], key[1]), Ordering::Relaxed);
             }
             return;
         }
+        // Partial times only grow, so the final sorted times dominate these
+        // elementwise: already-worse partials can only end worse.
         let b = self.bound();
-        // Already at the best max: can only win on total, which can't drop
-        // below what's committed plus the fastest times for what's left.
-        if *partial.iter().max().unwrap() == b.0 && total + rest[depth] > b.1 {
+        if key > self.best || (key[0], key[1]) > b {
+            return;
+        }
+        // Pinned at the best slowest time: the 2nd slowest can't drop below
+        // what the committed plus fastest-remaining total forces.
+        let total: i32 = partial.iter().sum();
+        if key[0] == b.0 && self.second_floor((total + rest[depth]) as i64, b.0) > b.1 as i64 {
             return;
         }
         let e = self.order[depth];
@@ -190,7 +217,7 @@ fn slowest_first(pool: &[Person], n: usize) -> Vec<usize> {
 }
 
 /// Best k-team in `pool` with max time <= `seed` (if given). Parallel over the
-/// first member; the per-worker results are reduced by (score, total, combo),
+/// first member; the per-worker results are reduced by (key, combo),
 /// so the answer doesn't depend on scheduling.
 fn best_team(pool: &[Person], n: usize, k: usize, seed: Option<i32>) -> Option<Found> {
     let m = pool.len();
@@ -198,6 +225,7 @@ fn best_team(pool: &[Person], n: usize, k: usize, seed: Option<i32>) -> Option<F
         return None;
     }
     let order = slowest_first(pool, n);
+    assert!(k <= MAX_K);
     let shared = AtomicU64::new(pack(seed.unwrap_or(i32::MAX), i32::MAX));
     (0..=m - k)
         .into_par_iter()
@@ -209,20 +237,15 @@ fn best_team(pool: &[Person], n: usize, k: usize, seed: Option<i32>) -> Option<F
                 mins: vec![vec![0; n]; k],
                 combo: vec![a],
                 shared: &shared,
-                best: (seed.unwrap_or(i32::MAX), i32::MAX),
+                best: [seed.unwrap_or(i32::MAX), i32::MAX, i32::MAX, i32::MAX],
                 best_combo: Vec::new(),
                 best_masks: Vec::new(),
             };
             s.mins[0].copy_from_slice(&pool[a].avgs);
             s.combos(a + 1, 1);
-            (!s.best_combo.is_empty()).then(|| Found {
-                score: s.best.0,
-                total: s.best.1,
-                combo: s.best_combo,
-                masks: s.best_masks,
-            })
+            (!s.best_combo.is_empty()).then(|| Found { key: s.best, combo: s.best_combo, masks: s.best_masks })
         })
-        .min_by(|x, y| (x.score, x.total, &x.combo).cmp(&(y.score, y.total, &y.combo)))
+        .min_by(|x, y| (x.key, &x.combo).cmp(&(y.key, &y.combo)))
 }
 
 fn to_team(pool: &[Person], f: &Found, events: &[&str]) -> Team {
@@ -242,7 +265,7 @@ fn to_team(pool: &[Person], f: &Found, events: &[&str]) -> Team {
             }
         })
         .collect();
-    Team { time_cs: f.score, members }
+    Team { time_cs: f.key[0], members }
 }
 
 /// Region key -> pruned pool, for the world, each continent, and each country.
@@ -294,7 +317,7 @@ fn solve_size(
 
     let global = best_team(&p.global, n, k, seeds.get("").copied());
     if let Some(f) = &global {
-        next.insert(String::new(), f.score);
+        next.insert(String::new(), f.key[0]);
     }
     let global = global.map(|f| to_team(&p.global, &f, events));
 
@@ -318,7 +341,7 @@ fn solve_size(
         let mut out: Vec<RegionEntry> = found
             .into_iter()
             .map(|(id, f)| {
-                next.insert(format!("{prefix}{id}"), f.score);
+                next.insert(format!("{prefix}{id}"), f.key[0]);
                 RegionEntry {
                     name: name_of(&id).unwrap_or_else(|| id.clone()),
                     team: to_team(pools[id.as_str()], &f, events),
