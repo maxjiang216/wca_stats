@@ -18,6 +18,9 @@ const CHARTS = [
   { href: '/china', label: 'China vs USA by event' },
   { href: '/first-records', label: 'First CR/WR by Country' },
   { href: '/memo-bits', label: 'Memorization Load' },
+  { href: '/best-podiums', label: 'Best Podiums' },
+  { href: '/best-without-record', label: 'Best Without a Record' },
+  { href: '/best-without-win', label: 'Best Without a Win' },
 ];
 
 const MBLD_EXTRA = [
