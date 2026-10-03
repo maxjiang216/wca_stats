@@ -1,6 +1,8 @@
 use anyhow::Result;
 use crate::db::WcaDb;
 
+mod best_podiums;
+mod best_without;
 mod dominance;
 mod first_records;
 pub mod kalman_skill;
@@ -32,6 +34,11 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     if std::env::var("ONLY_TEAMS").is_ok() {
         two_man::write(db, out_dir)?;
         n_man::write(db, out_dir)?;
+        return Ok(());
+    }
+    if std::env::var("ONLY_BEST_PODIUMS").is_ok() {
+        best_podiums::write(db, out_dir)?;
+        best_without::write(db, out_dir)?;
         return Ok(());
     }
     if std::env::var("ONLY_MEMO_BITS").is_ok() {
@@ -68,6 +75,8 @@ pub fn run(db: &WcaDb, out_dir: &str) -> Result<()> {
     stage!("wr_cross_rank", wr_cross_rank::write(db, out_dir));
     stage!("dominance", dominance::write(db, out_dir));
     stage!("memo_bits", memo_bits::write(db, out_dir));
+    stage!("best_podiums", best_podiums::write(db, out_dir));
+    stage!("best_without", best_without::write(db, out_dir));
 
     timings.sort_by(|a, b| b.1.cmp(&a.1));
     eprintln!("\nStage timings (slowest first):");
